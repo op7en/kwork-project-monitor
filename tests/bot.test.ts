@@ -18,15 +18,17 @@ const botInfo: UserFromGetMe = {
   supports_join_request_queries: false,
 };
 
-function messageUpdate(text: string): Update {
+const ownerId = 7654321;
+
+function messageUpdate(text: string, userId: number): Update {
   const command = text.split(' ')[0] ?? text;
   return {
     update_id: 1,
     message: {
       message_id: 1,
       date: 0,
-      from: { id: 1001, is_bot: false, first_name: 'Test user' },
-      chat: { id: 1001, type: 'private', first_name: 'Test user' },
+      from: { id: userId, is_bot: false, first_name: 'Test user' },
+      chat: { id: userId, type: 'private', first_name: 'Test user' },
       text,
       ...(text.startsWith('/')
         ? { entities: [{ type: 'bot_command' as const, offset: 0, length: command.length }] }
@@ -35,9 +37,9 @@ function messageUpdate(text: string): Update {
   };
 }
 
-async function repliesTo(text: string) {
+async function repliesTo(text: string, userId = ownerId) {
   // An obvious test placeholder, never a real secret. Network calls are intercepted.
-  const bot = createBot('test-only-placeholder');
+  const bot = createBot('test-only-placeholder', ownerId);
   bot.botInfo = botInfo;
   const requests: { method: string; payload: unknown }[] = [];
 
@@ -49,7 +51,7 @@ async function repliesTo(text: string) {
       result: {
         message_id: 2,
         date: 0,
-        chat: { id: 1001, type: 'private', first_name: 'Test user' },
+        chat: { id: userId, type: 'private', first_name: 'Test user' },
         from: botInfo,
         text: 'Offline API response',
       },
@@ -58,14 +60,14 @@ async function repliesTo(text: string) {
     return Promise.resolve(response) as ReturnType<typeof _previous<typeof method>>;
   });
 
-  await bot.handleUpdate(messageUpdate(text));
+  await bot.handleUpdate(messageUpdate(text, userId));
   return requests;
 }
 
 describe('Telegram commands without network', () => {
   it('replies pong to /ping in the originating chat', async () => {
     expect(await repliesTo('/ping')).toEqual([
-      { method: 'sendMessage', payload: { chat_id: 1001, text: 'pong' } },
+      { method: 'sendMessage', payload: { chat_id: ownerId, text: 'pong' } },
     ]);
   });
 
@@ -74,7 +76,7 @@ describe('Telegram commands without network', () => {
     expect(requests).toHaveLength(1);
     expect(requests[0]).toMatchObject({
       method: 'sendMessage',
-      payload: { chat_id: 1001, text: expect.stringMatching(/Привет.*Kwork/s) },
+      payload: { chat_id: ownerId, text: expect.stringMatching(/Привет.*Kwork/s) },
     });
     expect(requests[0]).toMatchObject({
       payload: { text: expect.stringMatching(/мониторинг/i) },
@@ -87,18 +89,33 @@ describe('Telegram commands without network', () => {
     for (const command of ['/start', '/help', '/ping']) {
       expect(requests[0]).toMatchObject({
         method: 'sendMessage',
-        payload: { chat_id: 1001, text: expect.stringContaining(command) },
+        payload: { chat_id: ownerId, text: expect.stringContaining(command) },
       });
     }
   });
 
   it('accepts commands explicitly addressed to this bot', async () => {
     expect(await repliesTo('/ping@kwork_monitor_test_bot')).toEqual([
-      { method: 'sendMessage', payload: { chat_id: 1001, text: 'pong' } },
+      { method: 'sendMessage', payload: { chat_id: ownerId, text: 'pong' } },
     ]);
   });
 
   it.each(['/ping@another_bot', '/unknown', 'hello'])('ignores unrelated input: %s', async (text) => {
     expect(await repliesTo(text)).toEqual([]);
+  });
+
+  it.each(['/start', '/help', '/ping'])('silently ignores %s from another user', async (text) => {
+    expect(await repliesTo(text, ownerId + 1)).toEqual([]);
+  });
+
+  it('never includes the configured owner ID in replies', async () => {
+    for (const command of ['/start', '/help', '/ping']) {
+      const requests = await repliesTo(command);
+      const responseTexts = requests.map(({ payload }) => {
+        if (typeof payload !== 'object' || payload === null || !('text' in payload)) return '';
+        return String(payload.text);
+      });
+      expect(responseTexts.join('\n')).not.toContain(String(ownerId));
+    }
   });
 });

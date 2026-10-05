@@ -2,8 +2,8 @@ import { createBot } from './bot/bot.js';
 import { ConfigError, loadConfig } from './config/env.js';
 
 try {
-  const { telegramBotToken } = loadConfig();
-  const bot = createBot(telegramBotToken);
+  const { telegramBotToken, telegramOwnerId } = loadConfig();
+  const bot = createBot(telegramBotToken, telegramOwnerId);
 
   // HTTP errors can contain the Bot API URL with its token. Never log raw errors.
   bot.catch(({ ctx }) => {

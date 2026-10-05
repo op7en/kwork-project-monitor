@@ -23,6 +23,16 @@
 ## Секреты
 
 - Любой файл в Git потенциально станет публичным. Никогда не коммить секреты.
+- Никогда не читай, не выводи и не копируй содержимое `.env` в tool output,
+  логи, summaries или сообщения пользователю. Не запускай для этого команды
+  `cat .env`, `type .env`, `Get-Content .env`, `printenv`, `env` и другие
+  команды, способные раскрыть реальные secrets.
+- Для проверки конфигурации окружения используй `.env.example`, проверяй только
+  существование `.env`, `git check-ignore .env`, tracked-файлы и `git diff`;
+  не раскрывай значения secrets.
+- Если secret случайно попал в tool output или логи, считай его раскрытым и
+  сообщи владельцу о необходимости ротации. Никогда не выводи secret повторно
+  для проверки.
 - TELEGRAM_BOT_TOKEN, Gmail OAuth credentials и refresh token, PostgreSQL
   credentials, LLM API keys и другие секреты передавай через environment variables.
 - Поддерживай .gitignore и .env.example с безопасными placeholder-значениями.

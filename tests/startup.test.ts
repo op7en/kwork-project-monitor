@@ -8,7 +8,11 @@ describe('application startup without credentials', () => {
   it.each(['', 'your_telegram_bot_token_here'])('exits with a helpful configuration error: %j', (token) => {
     const result = spawnSync(process.execPath, ['--import', 'tsx', 'src/index.ts'], {
       cwd: projectDirectory,
-      env: { ...process.env, TELEGRAM_BOT_TOKEN: token },
+      env: {
+        ...process.env,
+        TELEGRAM_BOT_TOKEN: token,
+        TELEGRAM_OWNER_ID: '123456789',
+      },
       encoding: 'utf8',
       timeout: 5000,
     });
