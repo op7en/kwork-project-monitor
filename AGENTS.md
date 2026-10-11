@@ -39,12 +39,21 @@
 - Не логируй токены, API keys, OAuth secrets, пароли или полные Authorization headers.
 - Ошибки HTTP-клиентов могут содержать URL с токеном: не печатай raw error objects.
 
-## Gmail (будущий этап)
+## Gmail (Milestone 2)
 
 - Интеграция изначально READ ONLY. Обрабатывай только точную тему:
   «Новые проекты на бирже Kwork».
 - Не удаляй и не архивируй письма, не добавляй labels и не меняй состояние Gmail
   без явного запроса. Не хардкодь email или credentials.
+- Используй `gmail.readonly`; он обязателен среди фактических OAuth scopes.
+  Дополнительные non-Gmail scopes допустимы. Отклоняй широкие или неизвестные
+  Gmail scopes. Gmail mutation endpoints запрещены без отдельного явного
+  изменения требований.
+- Перед поиском проверяй scopes access token и профиль `me` на соответствие
+  ожидаемому аккаунту. В Milestone 2 получай только metadata и точный Subject,
+  не body. Не подключай Gmail к Telegram handlers.
+- Не логируй OAuth tokens. Реальные Gmail credentials не должны попадать в
+  tests, fixtures или docs; правило о запрете чтения `.env` действует и здесь.
 
 ## Парсер и фильтрация (будущие этапы)
 

@@ -2,7 +2,7 @@
   "name": "kwork-project-monitor",
   "version": "0.1.0",
   "private": true,
-  "description": "Personal Telegram bot for monitoring suitable Kwork projects. Milestone 1: basic commands.",
+  "description": "Personal Telegram bot and independent Gmail READ ONLY metadata check for Kwork emails.",
   "type": "module",
   "engines": {
     "node": "^24.0.0 || >=26.0.0"
@@ -14,9 +14,11 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "lint": "eslint src tests vitest.config.ts eslint.config.mjs"
+    "lint": "eslint src tests vitest.config.ts eslint.config.mjs",
+    "gmail:check": "node --env-file-if-exists=.env --import tsx src/gmail/check.ts"
   },
   "dependencies": {
+    "googleapis": "^183.0.0",
     "grammy": "^1.46.0"
   },
   "devDependencies": {
