@@ -39,6 +39,21 @@
 - Не логируй токены, API keys, OAuth secrets, пароли или полные Authorization headers.
 - Ошибки HTTP-клиентов могут содержать URL с токеном: не печатай raw error objects.
 
+## Telegram notifications (Milestone 4.1)
+
+- Команды разрешены только при совпадении from.id владельца, chat.type=private
+  и chat.id владельца. Owner ID не разрешает ответ либо уведомление в группу (F3).
+- Используй KworkProject и plaintext formatter без parse_mode/entities;
+  URL кнопки повторно валидируется существующей Kwork policy, ID должен совпасть.
+- Project notifier подтверждает destination только из настоящего private owner
+  Telegram context. Произвольный chat ID/контекст из письма не является подтверждением.
+  Отправка всегда адресуется ownerId, групповые/чужие updates не меняют destination.
+- Подтверждение — только память одного экземпляра. После перезапуска destination
+  неподтверждён до нового корректного private взаимодействия и вызова trusted handler.
+- В 4.1 notifier проверяется только через mock Telegram API; startup/handlers не
+  подключены к Gmail либо отправке проектов. Реальную отправку не запускай без разрешения.
+- Не логируй проекты/raw Telegram errors, не возвращай credentials/PII в диагностику.
+
 ## Gmail (Milestone 2)
 
 - Интеграция изначально READ ONLY. Обрабатывай только точную тему:

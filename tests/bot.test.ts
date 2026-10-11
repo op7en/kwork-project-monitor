@@ -1,4 +1,4 @@
-import type { Update, UserFromGetMe } from 'grammy/types';
+import type { Chat, Update, UserFromGetMe } from 'grammy/types';
 import { describe, expect, it } from 'vitest';
 import { createBot } from '../src/bot/bot.js';
 
@@ -19,25 +19,33 @@ const botInfo: UserFromGetMe = {
 };
 
 const ownerId = 7654321;
+type MessageChat = Exclude<Chat, { type: 'channel' }>;
 
-function messageUpdate(text: string, userId: number): Update {
+function messageUpdate(text: string, userId: number, chat?: MessageChat, includeFrom = true): Update {
   const command = text.split(' ')[0] ?? text;
+  const content = {
+    message_id: 1,
+    date: 0,
+    text,
+    ...(text.startsWith('/')
+      ? { entities: [{ type: 'bot_command' as const, offset: 0, length: command.length }] }
+      : {}),
+  };
+  if (!includeFrom) return {
+    update_id: 1,
+    channel_post: { ...content, chat: { id: -10003, type: 'channel', title: 'Synthetic channel' } },
+  };
   return {
     update_id: 1,
     message: {
-      message_id: 1,
-      date: 0,
+      ...content,
       from: { id: userId, is_bot: false, first_name: 'Test user' },
-      chat: { id: userId, type: 'private', first_name: 'Test user' },
-      text,
-      ...(text.startsWith('/')
-        ? { entities: [{ type: 'bot_command' as const, offset: 0, length: command.length }] }
-        : {}),
+      chat: chat ?? { id: userId, type: 'private', first_name: 'Test user' },
     },
   };
 }
 
-async function repliesTo(text: string, userId = ownerId) {
+async function repliesTo(text: string, userId = ownerId, chat?: MessageChat, includeFrom = true) {
   // An obvious test placeholder, never a real secret. Network calls are intercepted.
   const bot = createBot('test-only-placeholder', ownerId);
   bot.botInfo = botInfo;
@@ -60,7 +68,7 @@ async function repliesTo(text: string, userId = ownerId) {
     return Promise.resolve(response) as ReturnType<typeof _previous<typeof method>>;
   });
 
-  await bot.handleUpdate(messageUpdate(text, userId));
+  await bot.handleUpdate(messageUpdate(text, userId, chat, includeFrom));
   return requests;
 }
 
@@ -106,6 +114,22 @@ describe('Telegram commands without network', () => {
 
   it.each(['/start', '/help', '/ping'])('silently ignores %s from another user', async (text) => {
     expect(await repliesTo(text, ownerId + 1)).toEqual([]);
+  });
+
+  it.each(['/start', '/help', '/ping'])('never replies to owner command %s in a group', async (text) => {
+    expect(await repliesTo(text, ownerId, { id: -10001, type: 'group', title: 'Synthetic group' })).toEqual([]);
+  });
+
+  it('rejects owner commands in a supergroup', async () => {
+    expect(await repliesTo('/ping', ownerId, { id: -10002, type: 'supergroup', title: 'Synthetic group' })).toEqual([]);
+  });
+
+  it('rejects a private chat whose ID does not match the owner', async () => {
+    expect(await repliesTo('/ping', ownerId, { id: ownerId + 1, type: 'private', first_name: 'Other' })).toEqual([]);
+  });
+
+  it('ignores channel posts without a sender identity', async () => {
+    expect(await repliesTo('/ping', ownerId, undefined, false)).toEqual([]);
   });
 
   it('never includes the configured owner ID in replies', async () => {

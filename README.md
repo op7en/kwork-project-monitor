@@ -19,7 +19,7 @@ Gmail body reader. Поддерживается подтверждённый в�
 Локальная приёмка использует один обезличенный образец; это не доказывает поддержку
 всех будущих вариантов уведомлений. Вымышленный `synthetic-v1` сохранён отдельно.
 PostgreSQL, постоянная
-deduplication, filtering, notifications и AI ещё не реализованы.
+deduplication, filtering, автоматические notifications и AI ещё не реализованы.
 Telegram-бот продолжает отвечать только на три существующие команды.
 
 Для подтверждённого шаблона явно передавайте `KWORK_TABLE_POLICY` из
@@ -46,6 +46,37 @@ URL policy допускает только HTTPS, точный `kwork.ru`, пу�
 вымышленный `synthetic-v1` и полностью синтетическую таблицу подтверждённой формы.
 Файлы ручной приёмки в `.local-acceptance/` игнорируются Git и не включены в тесты.
 В tracked changes добавлен только независимо написанный synthetic table fixture.
+
+**Milestone 4.1:** подготовка private Telegram-уведомлений. Все команды проходят
+общий guard: `from.id` совпадает с владельцем, `chat.type` — `private`, `chat.id`
+совпадает с ID владельца; групповой чат не является допустимым destination (F3 закрыт).
+Formatter использует существующий `KworkProject`: название, optional `price`,
+покупатель/подписанная статистика и `details`, кнопка «Открыть заказ». Прямой URL
+повторно валидируется по подтверждённой Kwork policy; его ID должен совпадать с
+`projectId`. Gmail provenance в Telegram-текст не включается.
+
+Текст передаётся без `parse_mode`/`entities`, HTML/Markdown остаются буквальными
+символами. Управляющие/bidi-символы удаляются, заголовок остаётся одной строкой;
+длинный текст сокращается до 4000 UTF-16 единиц без разрыва surrogate pair.
+Цена форматируется из нормализованной суммы RUB, не из недоверенного `raw`;
+`budget` не переименовывается в цену. Link preview отключён.
+
+`createProjectNotifier(api, ownerId)` возвращает `confirmDestination(ctx)` и
+`send(project)`. Подтверждение принимает только настоящий Telegram context
+владельца в его private chat; контекст нельзя восстанавливать из письма или
+произвольного внешнего ввода. Групповые/чужие updates не могут подтвердить либо
+заменить destination. Отправка всегда адресуется настроенному владельцу.
+Без подтверждения возвращается `destination_unconfirmed`, для неверного проекта —
+`invalid_project`, при ошибке API — `telegram_error`, при успехе — `sent`.
+Raw errors, текст проекта и credentials не логируются; автоматического retry нет.
+
+Подтверждение хранится только в памяти одного экземпляра sender. После перезапуска
+новый экземпляр неподтверждён до нового корректного взаимодействия владельца
+в личном чате и вызова `confirmDestination` его trusted handler. В 4.1 sender —
+отдельный подготовленный API-модуль, проверенный с mock Telegram API;
+`src/index.ts` его ещё не создаёт, текущие команды не запускают отправку проектов.
+Связь private handler → confirmation → Gmail/parser → sender и разрешённая ручная
+end-to-end проверка относятся к Milestone 4.2. Настоящая отправка в 4.1 не проверялась.
 
 ## Стек
 
@@ -403,12 +434,16 @@ pagination и безопасные ошибки через fake API boundary. П
 | `/help` | Список доступных команд |
 | `/ping` | `pong` |
 
-Бот принимает команды только от владельца, заданного через `TELEGRAM_OWNER_ID`.
+Бот принимает команды только от владельца, заданного через `TELEGRAM_OWNER_ID`,
+в его личном чате. Команды владельца из групп/supergroups игнорируются.
 Gmail check запускается отдельно; Telegram handlers не вызывают Gmail.
 
 ## Структура
 
 - `src/bot/bot.ts` — создание бота и три обработчика; импорт не запускает polling.
+- `src/bot/privateChat.ts` — общий guard владельца и private destination.
+- `src/bot/projectFormatter.ts` — чистая подготовка текста и проверенной URL-кнопки.
+- `src/bot/projectNotifications.ts` — sender с подтверждением только в памяти и безопасными результатами.
 - `src/config/env.ts` — чтение и проверка переменных окружения.
 - `src/config/gmail.ts` — отдельная Gmail-конфигурация.
 - `src/gmail/client.ts` — OAuth, проверка аккаунта и READ ONLY API boundary.

@@ -3,7 +3,7 @@
 Status: owner confirmed public headers, price/statistics meanings and /new_offer?project=<ID>; authorized local adapter work. The corrected Git-ignored fixture passes local offline parser acceptance. Original/private sanitized files are not authorized for Git publication or external scans; independently authored synthetic table fixtures cover tests. No repeat Gmail capture was performed.
 Baseline: 782da2567850003155873d9eca2508edad333a18. Preserve all existing uncommitted Milestone 3 work.
 
-## What the current code proves
+## Historical baseline before observed-table adaptation
 
 The readonly project reader verifies actual OAuth scopes/account, then exact single Subject and a single mailbox From against a caller-supplied allowlist, message ID and size before full. The full response is rechecked. From matching is a filter, not cryptographic authentication. The parser supports only synthetic-v1, explicit cards, h2 project anchors, labelled p fields and fictitious project links. It is not yet a real Kwork adapter.
 
@@ -43,3 +43,9 @@ DOM serialization can repair malformed HTML. Record this limitation; preserve so
 ## Verdict rules
 
 READY requires approved real-derived fixture expectations, correct fields/URLs/provenance, passing required checks and no unaddressed confirmed P0/P1. READY WITH WARNINGS must name limited template coverage and any remaining evidence gap. Until body permission and fixture approval, real-format acceptance is waiting on owner input; do not claim it passed or reuse the previous 231-test run as fresh evidence.
+
+## Status update after Milestone 3 acceptance (2026-10-11)
+
+The synthetic-only statement above records the baseline when this procedure was written; it is not the current parser capability. The owner subsequently confirmed the table columns Название / Покупатель / Цена, row-local buyer statistics and direct HTTPS kwork.ru/new_offer?project=<ID> links. The existing parser now supports explicit kwork-table-v1 / KWORK_TABLE_POLICY in addition to synthetic-v1. One locally sanitized observed template passed acceptance; multiple rows and adversarial variants are independently synthetic tests, not proof of all future emails.
+
+Milestone 3 was accepted with these limitations and published as 22302e899c740ce02b38cdbee69b5e2562f8556d. Its privately sanitized acceptance files remain Git-ignored and are not published. The original acquisition/approval gates above are preserved as history and do not authorize another Gmail body request.
