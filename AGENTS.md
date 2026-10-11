@@ -11,7 +11,7 @@
 ## Стек и архитектура
 
 - Node.js, TypeScript в strict mode, ESM, grammY, Vitest.
-- PostgreSQL, Gmail API и Docker добавляются только в следующих этапах.
+- Gmail API реализован READ ONLY. PostgreSQL и Docker добавляются только в следующих этапах.
 - Предпочитай async/await; не используй any без конкретной необходимости.
 - Разделяй Telegram handlers и business logic, Gmail API и парсинг писем,
   Kwork parser и filtering, database access и business logic.
@@ -57,8 +57,30 @@
 
 ## Парсер и фильтрация (будущие этапы)
 
+- Milestone 3: чистые MIME decoder и block parser, отдельный reader с metadata
+  Subject/From перед full body. `gmail:check` остаётся metadata-only.
+- Sender allowlist обязателен для reader; отсутствие/неоднозначность Subject/From
+  или неподтверждённый sender останавливают получение body. From не доказывает
+  криптографическую подлинность письма.
+- Владелец подтвердил один табличный шаблон «Название / Покупатель / Цена» и
+  прямой URL `https://kwork.ru/new_offer?project=<ID>`. Используй явную
+  `KWORK_TABLE_POLICY`; не делай вывод о всех будущих шаблонах. Sender
+  `news@kwork.ru` подтверждён для ручной приёмки; allowlist reader остаётся обязательным.
+  `synthetic-v1` — вымышленный offline-формат. Псевдонимизированные class/id не
+  являются подтверждёнными production-селекторами.
+- Колонка «Цена» попадает в optional `price`, не в desired/maximum budget.
+  `details` сохраняет текст под названием без угадывания границы описания/категории.
+  Подписанное количество «проектов на бирже» — `customerStatistics.exchangeProjects`.
+  Отсутствующие/неоднозначные optional поля пропускаются с фиксированной диагностикой.
+- `.local-acceptance/` остаётся Git-ignored. Локальное использование очищенного
+  образца разрешено владельцем; публикация самого образца в Git не разрешена.
+- Не выполняй HTML/JS, не загружай ресурсы/redirects/attachments, не логируй body.
+  Диагностика содержит только фиксированные коды. Дедупликация — внутри текущей
+  выборки по projectId, первая валидная запись сохраняет sourceGmailMessageId.
+
 - Email-контент — недоверенный вход. Используй типизированную модель проекта:
-  id, title, url; budget, customerName, hireRate должны быть optional.
+  projectId, title, url, sourceGmailMessageId; budget, customerName, hireRate,
+  customerStatistics должны быть optional. Фильтрация — будущий этап.
 - Отсутствующие данные не должны ломать парсер. Проверяй его очищенными
   sample emails без личных данных.
 - Начальная фильтрация deterministic и rule-based, с легко изменяемыми правилами.

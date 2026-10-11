@@ -1,4 +1,62 @@
 import type { GmailConfig } from '../config/gmail.js';
+import { MAX_MESSAGE_BYTES, type MessagePart } from './mime.js';
+import type { Diagnostic } from '../kwork/model.js';
+import { KWORK_SUBJECT } from './kworkEmails.js';
+
+export interface GmailFullMessage { id?: string | null; sizeEstimate?: number | null; payload?: MessagePart | null }
+export interface GmailProjectReader {
+  getProjectMessage(id: string): Promise<{ message?: GmailFullMessage; diagnostics: Diagnostic[] }>;
+}
+const mailboxPattern = /^[a-z0-9._+-]+@[a-z0-9]+(?:[.-][a-z0-9]+)*\.[a-z]{2,}$/i;
+function senderFrom(value: string): string | undefined {
+  // eslint-disable-next-line no-control-regex -- Reject untrusted header control bytes explicitly.
+  if (value.length > 320 || /[\u0000-\u001f\u007f,;]/u.test(value)) return undefined;
+  const bare = value.trim();
+  if (mailboxPattern.test(bare)) return bare.toLowerCase();
+  const display = /^[^<>]+<([^<>]+)>$/.exec(bare);
+  const mailbox = display?.[1]?.trim();
+  return mailbox && mailboxPattern.test(mailbox) ? mailbox.toLowerCase() : undefined;
+}
+function trustedHeaders(headers: MessagePart['headers'], allowed: ReadonlySet<string>): boolean {
+  if (!Array.isArray(headers) || headers.length > 100) return false;
+  const values = (name: string): Array<string | null | undefined> => headers
+    .filter(h => typeof h?.name === 'string' && h.name.toLowerCase() === name).map(h => h.value);
+  const subjects = values('subject'), senders = values('from');
+  if (subjects.length !== 1 || subjects[0] !== KWORK_SUBJECT || senders.length !== 1 || typeof senders[0] !== 'string') return false;
+  const sender = senderFrom(senders[0]);
+  return sender !== undefined && allowed.has(sender);
+}
+function permittedMessage(message: GmailFullMessage, id: string, allowed: ReadonlySet<string>): boolean {
+  return message.id === id && typeof message.sizeEstimate === 'number' && Number.isSafeInteger(message.sizeEstimate) &&
+    message.sizeEstimate >= 0 && message.sizeEstimate <= MAX_MESSAGE_BYTES && trustedHeaders(message.payload?.headers, allowed);
+}
+export async function createGmailProjectReader(config: GmailConfig, allowedSenders: readonly string[]): Promise<GmailProjectReader> {
+  if (!Array.isArray(allowedSenders) || allowedSenders.length === 0 || allowedSenders.length > 20 ||
+      allowedSenders.some(sender => typeof sender !== 'string' || sender.length > 254 || !mailboxPattern.test(sender))) {
+    throw new GmailError('Требуется явно подтверждённый sender allowlist.', 'sender_policy', 'invalid_sender_policy');
+  }
+  const allowed = new Set(allowedSenders.map(sender => sender.toLowerCase()));
+  const gmail = await verifiedGmailApi(config);
+  return {
+    async getProjectMessage(id) {
+      if (!/^[A-Za-z0-9_-]{1,128}$/.test(id)) return { diagnostics: ['message_rejected'] };
+      let metadata: GmailFullMessage;
+      try {
+        const { data } = await gmail.users.messages.get({ userId: 'me', id, format: 'metadata',
+          metadataHeaders: ['Subject', 'From'], fields: 'id,sizeEstimate,payload/headers' }, requestOptions);
+        metadata = data;
+      } catch (error: unknown) { throw safeApiError(error, 'message_metadata', 'Не удалось проверить metadata сообщения.'); }
+      if (!permittedMessage(metadata, id, allowed)) return { diagnostics: ['message_rejected'] };
+      let full: GmailFullMessage;
+      try {
+        const { data } = await gmail.users.messages.get({ userId: 'me', id, format: 'full', fields: 'id,sizeEstimate,payload' }, requestOptions);
+        full = data;
+      } catch (error: unknown) { throw safeApiError(error, 'message_full', 'Не удалось получить содержимое сообщения.'); }
+      if (!permittedMessage(full, id, allowed)) return { diagnostics: ['message_rejected'] };
+      return { message: { id: full.id!, sizeEstimate: full.sizeEstimate!, payload: full.payload! }, diagnostics: [] };
+    },
+  };
+}
 
 export const GMAIL_READONLY_SCOPE = 'https://www.googleapis.com/auth/gmail.readonly';
 const READONLY_GMAIL_SCOPES = new Set([
@@ -9,10 +67,10 @@ const READONLY_GMAIL_SCOPES = new Set([
 const requestOptions = { timeout: 10_000, retry: false };
 
 export type GmailStage = 'access_token' | 'oauth_scopes' | 'profile' | 'account' |
-  'messages_list' | 'message_metadata';
+  'messages_list' | 'message_metadata' | 'message_full' | 'sender_policy';
 export type GmailErrorCategory = 'invalid_grant' | 'invalid_client' | 'access_denied' |
   'insufficient_scope' | 'network_error' | 'timeout' | 'unknown_oauth_error' |
-  'unknown_api_error' | 'unsafe_gmail_scope' | 'account_mismatch';
+  'unknown_api_error' | 'unsafe_gmail_scope' | 'account_mismatch' | 'invalid_sender_policy';
 
 export class GmailError extends Error {
   declare readonly httpStatus?: number;
@@ -71,7 +129,7 @@ export interface GmailClient {
   getMessageMetadata(id: string): Promise<GmailMetadata>;
 }
 
-export async function createGmailClient(config: GmailConfig): Promise<GmailClient> {
+async function verifiedGmailApi(config: GmailConfig) {
   const { google } = await import('googleapis');
   const auth = new google.auth.OAuth2({
     clientId: config.clientId,
@@ -121,6 +179,11 @@ export async function createGmailClient(config: GmailConfig): Promise<GmailClien
     throw new GmailError('Gmail аккаунт не соответствует GMAIL_EXPECTED_ACCOUNT_EMAIL. Операция остановлена.',
       'account', 'account_mismatch');
   }
+  return gmail;
+}
+
+export async function createGmailClient(config: GmailConfig): Promise<GmailClient> {
+  const gmail = await verifiedGmailApi(config);
 
   // Return only read operations after both permission and identity checks pass.
   return {

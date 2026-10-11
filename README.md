@@ -13,9 +13,39 @@
 локальная команда `npm run gmail:check`. Она проверяет аккаунт и получает только
 metadata писем с точной темой «Новые проекты на бирже Kwork».
 
-Чтение body писем, извлечение проектов, PostgreSQL, deduplication, filtering,
-Telegram notifications и AI analysis **ещё не реализованы**. Telegram-бот
-продолжает отвечать только на три существующие команды.
+**Milestone 3:** offline MIME decoder, block parser и отдельный metadata-gated
+Gmail body reader. Поддерживается подтверждённый владельцем табличный шаблон
+«Название / Покупатель / Цена» и прямая ссылка `https://kwork.ru/new_offer?project=<ID>`.
+Локальная приёмка использует один обезличенный образец; это не доказывает поддержку
+всех будущих вариантов уведомлений. Вымышленный `synthetic-v1` сохранён отдельно.
+PostgreSQL, постоянная
+deduplication, filtering, notifications и AI ещё не реализованы.
+Telegram-бот продолжает отвечать только на три существующие команды.
+
+Для подтверждённого шаблона явно передавайте `KWORK_TABLE_POLICY` из
+`src/kwork/parser.ts` в `parseGmailMessage` / `readKworkProjects`. Reader требует
+caller-supplied sender allowlist; подтверждение `news@kwork.ru` в ручной приёмке
+не отключает эту проверку и не доказывает криптографическую подлинность From.
+`gmail:check` остаётся metadata-only, body автоматически не загружается.
+
+Каждая запись извлекается из своей строки с тремя прямыми ячейками под точными
+подписями колонок. Вложенные/объединённые неоднозначные ячейки пропускаются.
+`price` — целая сумма RUB из колонки «Цена»; она не становится желаемым или
+максимальным бюджетом. `details` хранит текст под названием, включая категорию:
+неподтверждённую границу описания/категории парсер не угадывает. Статистика
+`customerStatistics.exchangeProjects` и `hireRate` извлекается только по подписям
+«проектов на бирже» / «нанято», из отдельных однозначных текстовых строк.
+
+URL policy допускает только HTTPS, точный `kwork.ru`, путь `/new_offer` и один
+`project` с положительным каноническим десятичным ID (до 80 цифр, без ведущих нулей).
+Дополнительные query parameters, fragments, encoded значения, userinfo и явно
+указанные порты отклоняются. Ссылки не открываются; URL из письма не реконструируется.
+Служебные ссылки и классы `class-…` не используются как признаки проекта.
+
+`npm run parser:check` работает offline с пустым окружением и демонстрирует
+вымышленный `synthetic-v1` и полностью синтетическую таблицу подтверждённой формы.
+Файлы ручной приёмки в `.local-acceptance/` игнорируются Git и не включены в тесты.
+В tracked changes добавлен только независимо написанный synthetic table fixture.
 
 ## Стек
 
@@ -238,6 +268,84 @@ error descriptions, URL запросов, credentials, headers или адрес
 
 После исправления повторите `npm run gmail:check`. Добавляйте новые credentials
 только локально; не присылайте их в чат и не выводите `.env` для диагностики.
+
+## Milestone 3: offline parser
+
+```bash
+npm run parser:check
+```
+
+Команда не загружает `.env`, не требует credentials и не обращается к сети.
+Выводит `fixture: synthetic-v1` с двумя проектами и отдельный
+`confirmedTableExample` с двумя полностью синтетическими табличными проектами.
+`kwork.example` и `/synthetic-project/` — вымышленные тестовые hostname/path.
+
+`parseGmailMessage()` (`src/gmail/projects.ts`) принимает offline structured
+payload. `readKworkProjects()` получает явно заданные message IDs через отдельный
+reader: `createGmailProjectReader(config, confirmedSenders)`. Пустой/неверный sender
+allowlist отклоняется до OAuth. Сохранены actual scopes и expected account gates.
+До full body проверяются metadata: единственный exact Subject, единственный From,
+совпадающий с allowlist, ID и sizeEstimate ≤ 1 MiB. Full ID/headers повторно
+проверяются. From matching — фильтр, не криптографическая аутентификация.
+Reader не предоставляет mutation/attachment methods. Live parser CLI не добавлен;
+`gmail:check` по-прежнему получает metadata, без body.
+
+Parser policy передаётся явно; production defaults отсутствуют. `synthetic-v1`
+поддерживает непересекающиеся HTML cards по trusted selector, один `h2` с названием,
+прямые project anchors и подписанные `p`-поля. Plain: отдельные параграфы
+`Проект: ...` / `Ссылка: ...`, разделённые пустой строкой. Разные IDs в одном блоке
+и вложенные карточки пропускаются; поля соседних карточек не объединяются.
+
+Budget: fixed/range/up-to/from с raw text, только явно обозначенные целые рубли.
+Общий `Бюджет`, `Желаемый бюджет`, `Максимальный бюджет` сохраняются отдельно.
+Optional поля не угадываются. Synthetic labels: `Заказчик`, `Нанимает` (0–100%),
+`Размещено проектов`, `Нанято проектов`. Для `kwork-table-v1` используются
+подтверждённые `price`, `exchangeProjects` и `% нанято`, описанные выше.
+
+MIME: plain/html, nested mixed/alternative/related, strict padded/unpadded
+base64url, fatal decoding. Charset листа: UTF-8 по умолчанию; явные UTF-8,
+windows-1251/cp1251, windows-1252/iso-8859-1, UTF-16LE/BE при поддержке ICU.
+Выбирается отдельная HTML-версия с наибольшим количеством уникальных проектов, plain
+используется как fallback только для подтверждённой соответствующей grammar
+(`synthetic-v1`). Реальный plain-шаблон пока не подтверждён. Независимые mixed-сегменты обрабатываются отдельно;
+альтернативы не объединяются. Attachment/forwarded subtrees исключены;
+external text storage выдаёт `attachment_required` без загрузки.
+
+Пределы обработки: 1 MiB decoded, 2 MiB encoded, MIME depth 16 / 128 parts,
+DOM depth 64 / 10 000 elements, 100 blocks на письмо, 50 IDs на вызов. Это не
+гарантированный network streaming cap. URLs требуют HTTPS, exact hostname/path
+policy и positive decimal ID; userinfo, явные ports, fragments, encoded paths,
+dot segments и redirects отвергаются. В `kwork-table-v1` разрешён ровно один query
+parameter `project`; остальные query parameters не подтверждены и отвергаются.
+HTML/JS/resources не исполняются и не загружаются. Inline CSS с comments/escapes
+консервативно исключается вместе с соответствующим поддеревом.
+Diagnostics содержат только фиксированные коды, без body/headers/credentials.
+
+Дедупликация: первый валидный projectId в порядке переданных писем/блоков сохраняет
+своё sourceGmailMessageId; поля копий не объединяются. Постоянного processed state
+нет; read/unread и labels Gmail не меняются.
+
+### Ручная приёмка реального формата
+
+Владелец подтвердил и разрешил локальную приёмку одного обезличенного письма с
+одним проектом. После восстановления публичных подписей и `/new_offer?project=<ID>`
+оно успешно разбирается локально. Файлы `.local-acceptance/` не публикуются и не
+передаются внешним сервисам. В тестах — отдельно написанные полностью синтетические
+данные с той же подтверждённой табличной семантикой. Расширение до нескольких строк
+проверено на синтетических данных, не на отдельном реальном много-проектном письме.
+
+Для дальнейшей проверки вариантов полезен обезличенный настоящий пример с
+несколькими проектами и отсутствующими optional полями, с сохранёнными DOM-границами и plain
+alternative, если есть; отдельно exact публичный From, Subject, Content-Type/charset.
+Удалите To/Cc/Bcc, адрес получателя, личные IDs, Gmail IDs, tracking identifiers,
+Received/Authentication-Results и любые токены. Названия и имена замените
+синтетическими. Сохраните подписи, формат бюджета и структуру project URL
+(hostname/path, с синтетическими IDs). `.env` и OAuth credentials не нужны.
+Приёмка одного наблюдаемого шаблона не доказывает поддержку всех будущих вариантов Kwork.
+
+Долг прошлого аудита: F1 Telegram initialization/shutdown, F2 Google SDK retry
+policy, F3 private chat boundary перед notifications. В Milestone 3 не исправляется.
+Отзыв прежних credentials технически не подтверждён.
 
 ## Разработка
 
