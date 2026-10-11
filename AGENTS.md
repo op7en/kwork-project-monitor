@@ -54,6 +54,22 @@
   подключены к Gmail либо отправке проектов. Реальную отправку не запускай без разрешения.
 - Не логируй проекты/raw Telegram errors, не возвращай credentials/PII в диагностику.
 
+## Manual pipeline (Milestone 4.2)
+
+- Один notifier и pipeline на экземпляр бота. Только ручной private owner handler
+  `/projects` вызывает ленивый Gmail loader; startup, `/start`, `/help`, `/ping`
+  к Gmail не обращаются. `/start` и `/projects` подтверждают destination только
+  из настоящего Telegram context после F3 guard.
+- Используй существующий metadata search, отдельный READ ONLY body reader,
+  allowlist `news@kwork.ru` и `KWORK_TABLE_POLICY`. Сохраняй scopes/account checks
+  и Subject/From gate перед body. From не доказывает подлинность письма.
+- Один активный проход; projectId отмечается до send, дубликаты внутри прохода
+  повторно не отправляются даже при ошибке Telegram. Между проходами дедупа нет.
+- Извлечённые проекты не называй подходящими: фильтрация по стеку не реализована.
+  Не запускай live pipeline без разрешения. Первый live smoke — отдельный
+  one-shot harness для одного выбранного письма и максимум одного уведомления;
+  harness пока не реализован. Не используй обычный `/projects` для первого smoke.
+
 ## Gmail (Milestone 2)
 
 - Интеграция изначально READ ONLY. Обрабатывай только точную тему:
@@ -66,7 +82,8 @@
   изменения требований.
 - Перед поиском проверяй scopes access token и профиль `me` на соответствие
   ожидаемому аккаунту. В Milestone 2 получай только metadata и точный Subject,
-  не body. Не подключай Gmail к Telegram handlers.
+  не body. В Milestone 2 не подключай Gmail к Telegram handlers; в 4.2 допускается
+  только явно описанный ручной `/projects` с отдельным metadata-gated body reader.
 - Не логируй OAuth tokens. Реальные Gmail credentials не должны попадать в
   tests, fixtures или docs; правило о запрете чтения `.env` действует и здесь.
 

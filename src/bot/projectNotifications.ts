@@ -9,6 +9,7 @@ export type NotificationResult = { status: 'sent' | 'destination_unconfirmed' | 
 export function createProjectNotifier(api: Pick<Api, 'sendMessage'>, ownerId: number) {
   let confirmed = false;
   return {
+    hasConfirmedDestination(): boolean { return confirmed; },
     // Caller must pass a genuine Telegram context; never reconstruct it from mail or arbitrary input.
     confirmDestination(ctx: OwnerChatContext): boolean {
       if (!isOwnerPrivateChat(ctx, ownerId)) return false;
