@@ -16,7 +16,8 @@
     "test:watch": "vitest",
     "lint": "eslint src tests vitest.config.ts eslint.config.mjs",
     "gmail:check": "node --env-file-if-exists=.env --import tsx src/gmail/check.ts",
-    "parser:check": "node --import tsx src/kwork/check.ts"
+    "parser:check": "node --import tsx src/kwork/check.ts",
+    "smoke:once": "node --env-file-if-exists=.env --import tsx src/smoke/run.ts"
   },
   "dependencies": {
     "googleapis": "^183.0.0",
