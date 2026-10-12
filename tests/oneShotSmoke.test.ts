@@ -8,6 +8,7 @@ import { createProjectNotifier } from '../src/bot/projectNotifications.js';
 import { createOneShotSmoke, loadSmokeProjects, type SmokeResult } from '../src/smoke/oneShot.js';
 import { createSmokeController } from '../src/smoke/controller.js';
 import { createSmokeBot } from '../src/smoke/smokeBot.js';
+import { createSmokeStructureDiagnostics } from '../src/smoke/structureDiagnostics.js';
 import type { Diagnostic, KworkProject, ParseResult } from '../src/kwork/model.js';
 import { TABLE_HEADER, TABLE_ROW } from './fixtures/kwork-table-v1.js';
 
@@ -126,10 +127,12 @@ function intercept(bot: Bot, failProject = false) {
   });
   return requests;
 }
-function makeSmokeBot(opts: { failProject?: boolean; messageId?: string; env?: NodeJS.ProcessEnv } = {}) {
+function makeSmokeBot(opts: { failProject?: boolean; messageId?: string; env?: NodeJS.ProcessEnv;
+  candidateOneMatch?: boolean } = {}) {
   const onFinished = vi.fn(); const onStarted = vi.fn(() => true);
   const bot = createSmokeBot('test-only-placeholder', ownerId, opts.messageId ?? SELECTED_ID,
-    id => loadSmokeProjects(id, opts.env ?? gmailEnv), onFinished, onStarted);
+    id => loadSmokeProjects(id, opts.env ?? gmailEnv,
+      createSmokeStructureDiagnostics(opts.candidateOneMatch ?? true)), onFinished, onStarted);
   return { bot, requests: intercept(bot, opts.failProject), onFinished, onStarted };
 }
 const formats = () => google.get.mock.calls.map(c => c[0].format as string);
@@ -150,6 +153,33 @@ describe('smoke bot → Google boundary → MIME/table → mock Telegram', () =>
     const { bot, requests } = makeSmokeBot();
     for (const command of ['/start', '/help', '/ping', '/projects']) await bot.handleUpdate(update(command));
     expect(requests).toEqual([]); expect(google.getAccessToken).not.toHaveBeenCalled();
+  });
+  it('fails closed on a candidate mapping mismatch before Gmail access or Telegram send', async () => {
+    const { bot, requests, onFinished } = makeSmokeBot({ candidateOneMatch: false });
+    await bot.handleUpdate(update('/smoke'));
+    expect(outcome(onFinished)).toMatchObject({ status: 'selection_mismatch', sent: 0, projects: 0 });
+    expect(google.getAccessToken).not.toHaveBeenCalled();
+    expect(google.get).not.toHaveBeenCalled();
+    expect(requests).toEqual([]);
+  });
+  it('preserves visible email CSS through metadata/body parsing and sends one mock card, never a second attempt', async () => {
+    const html = `<div style="margin:0; /* synthetic email layout */ padding:0"><table>${TABLE_HEADER}${TABLE_ROW}</table>` +
+      '<table><tr><td>synthetic layout</td></tr></table>'.repeat(7) + '</div>';
+    google.get.mockImplementation(async ({ id, format }: { id: string; format: string }) =>
+      tableMessage(id, TABLE_ROW, 'news@kwork.ru', format === 'full', Buffer.from(html).toString('base64url')));
+    const info = vi.spyOn(console, 'info').mockImplementation(() => {});
+    try {
+      const { bot, requests, onFinished } = makeSmokeBot();
+      await bot.handleUpdate(update('/smoke')); await bot.handleUpdate(update('/smoke'));
+      expect(formats()).toEqual(['metadata', 'full']);
+      expect(requests).toHaveLength(1);
+      expect(outcome(onFinished)).toMatchObject({ status: 'sent', projects: 1, sent: 1 });
+      expect(JSON.parse(String(info.mock.calls[0]?.[0]))).toMatchObject({
+        selected_id_matches_candidate_1: true, html_tables_before_hidden_filter: 8,
+        html_tables_after_hidden_filter: 8, html_tables_preserved_legacy_css_comment: 8,
+        extracted_projects: 1,
+      });
+    } finally { info.mockRestore(); }
   });
   it.each([
     [{ id: -10001, type: 'group', title: 'Synthetic group' }, ownerId],

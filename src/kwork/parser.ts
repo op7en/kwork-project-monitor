@@ -1,8 +1,10 @@
 import { parse as parseHtml, type HTMLElement } from 'node-html-parser';
 import { MAX_MESSAGE_BYTES, type DecodedBody } from '../gmail/mime.js';
 import type { Diagnostic, KworkProject, ParserPolicy, ParseResult } from './model.js';
+import type { SmokeStructureDiagnostics } from '../smoke/structureDiagnostics.js';
 import { parseBudget } from './budget.js';
 import { isUrlPolicy, validateProjectUrl } from './url.js';
+import { inlineStyleHidesContent } from './inlineVisibility.js';
 export function isParserPolicy(policy: ParserPolicy | undefined): policy is ParserPolicy {
   if (policy?.format === 'kwork-table-v1') return isUrlPolicy(policy.urls) && 'pathname' in policy.urls;
   return !!policy && policy.format === 'synthetic-v1' && typeof policy.htmlBlockSelector === 'string' &&
@@ -107,11 +109,29 @@ function boundedStatistic(text: string, caption: RegExp, valuePattern: RegExp, i
   if (!match) { issues.push('invalid_optional'); return undefined; }
   return Number(match[1]!.replace(',', '.'));
 }
-function tableProjects(root: HTMLElement, source: string, policy: ParserPolicy): ParseResult {
+function tableProjects(root: HTMLElement, source: string, policy: ParserPolicy,
+  trace?: SmokeStructureDiagnostics): ParseResult {
   const result: ParseResult = { projects: [], diagnostics: [] };
-  const tables = root.querySelectorAll('table').map(table => ({ table, rows: tableRows(table) })).filter(({rows}) => {
-    const cells = rows[0] && rowCells(rows[0]);
-    return cells?.map(cell => compactText(cell.text)).join('|') === 'Название|Покупатель|Цена';
+  const tables = root.querySelectorAll('table').flatMap(table => {
+    const rows = tableRows(table);
+    const row = rows[0];
+    const cells = row?.children ?? [];
+    let rejection: 'cell_count' | 'nested_table' | 'span' | 'header_mismatch' | undefined;
+    if (!row || cells.length !== 3 || cells.some(cell => !['td', 'th'].includes(cell.rawTagName))) rejection = 'cell_count';
+    else if (cells.some(cell => cell.querySelector('table'))) rejection = 'nested_table';
+    else if (cells.some(cell => ['rowspan', 'colspan'].some(name => cell.hasAttribute(name) && cell.getAttribute(name) !== '1'))) rejection = 'span';
+    else if (cells.map(cell => compactText(cell.text)).join('|') !== 'Название|Покупатель|Цена') rejection = 'header_mismatch';
+    if (rejection) {
+      if (trace) {
+        if (rejection === 'cell_count') trace.header_reject_cell_count++;
+        else if (rejection === 'nested_table') trace.header_reject_nested_table++;
+        else if (rejection === 'span') trace.header_reject_span++;
+        else trace.header_reject_header_mismatch++;
+      }
+      return [];
+    }
+    if (trace) trace.tables_header_gate_passed++;
+    return [{ table, rows }];
   });
   const selected = new Set(tables.map(item => item.table));
   let rowsSeen = 0;
@@ -171,9 +191,11 @@ function tableProjects(root: HTMLElement, source: string, policy: ParserPolicy):
   }
   return result;
 }
-function htmlProjects(html: string, source: string, policy: ParserPolicy): ParseResult {
+function htmlProjects(html: string, source: string, policy: ParserPolicy,
+  trace?: SmokeStructureDiagnostics): ParseResult {
   const result: ParseResult = { projects: [], diagnostics: [] };
   const root = parseHtml(html, { comment: false, parseNoneClosedTags: true });
+  if (policy.format === 'kwork-table-v1' && trace) trace.html_tables_before_hidden_filter += root.querySelectorAll('table').length;
   const pending = [{ node: root, depth: 0 }];
   let count = 0;
   while (pending.length) {
@@ -185,10 +207,31 @@ function htmlProjects(html: string, source: string, policy: ParserPolicy): Parse
   for (const element of root.querySelectorAll('script,style,template,noscript,iframe,object,svg,math,[hidden],[aria-hidden="true"]')) element.remove();
   for (const element of root.querySelectorAll('[style]')) {
     const style = element.getAttribute('style') ?? '';
-    // Conservative, linear handling of obfuscated CSS; don't implement a browser CSS interpreter.
-    if (style.includes('/*') || style.includes('\\') || /(?:display\s*:\s*none|visibility\s*:\s*hidden)/i.test(style)) element.remove();
+    if (inlineStyleHidesContent(style)) element.remove();
   }
-  if (policy.format === 'kwork-table-v1') return tableProjects(root, source, policy);
+  if (policy.format === 'kwork-table-v1') {
+    if (trace) {
+      const remaining = root.querySelectorAll('table');
+      trace.html_tables_after_hidden_filter += remaining.length;
+      // Count surviving tables that the former broad style checks would have removed.
+      // Each reason counts a table once, even if several of its ancestors match.
+      for (const table of remaining) {
+        let node: HTMLElement | null = table;
+        let comment = false, escape = false, substring = false;
+        while (node) {
+          const style = node.getAttribute('style') ?? '';
+          comment ||= style.includes('/*');
+          escape ||= style.includes('\\');
+          substring ||= /(?:display\s*:\s*none|visibility\s*:\s*hidden)/i.test(style);
+          node = node.parentNode;
+        }
+        if (comment) trace.html_tables_preserved_legacy_css_comment++;
+        if (escape) trace.html_tables_preserved_legacy_css_escape++;
+        if (substring) trace.html_tables_preserved_legacy_css_substring++;
+      }
+    }
+    return tableProjects(root, source, policy, trace);
+  }
   const blocks = root.querySelectorAll(policy.htmlBlockSelector);
   if (blocks.length > 100) return { projects: [], diagnostics: ['html_limit'] };
   const selected = new Set(blocks);
@@ -225,7 +268,8 @@ function textProjects(text: string, source: string, policy: ParserPolicy): Parse
   }
   return result;
 }
-export function parseProjects(body: DecodedBody, sourceGmailMessageId: string, policy?: ParserPolicy): ParseResult {
+function parseProjectsInternal(body: DecodedBody, sourceGmailMessageId: string, policy?: ParserPolicy,
+  trace?: SmokeStructureDiagnostics): ParseResult {
   if (!isParserPolicy(policy))
     return { projects: [], diagnostics: ['unconfirmed_policy'] };
   if (body.segments) {
@@ -235,7 +279,7 @@ export function parseProjects(body: DecodedBody, sourceGmailMessageId: string, p
     for (const segment of body.segments) {
       for (const content of [...segment.html, ...segment.text]) bytes += Buffer.byteLength(content);
       if (bytes > MAX_MESSAGE_BYTES) return { projects: [], diagnostics: ['html_limit'] };
-      const parsed = parseProjects({ ...segment, diagnostics: [] }, sourceGmailMessageId, policy);
+      const parsed = parseProjectsInternal({ ...segment, diagnostics: [] }, sourceGmailMessageId, policy, trace);
       if (parsed.diagnostics.includes('html_limit')) return parsed;
       result.projects.push(...parsed.projects); result.diagnostics.push(...parsed.diagnostics);
     }
@@ -248,7 +292,9 @@ export function parseProjects(body: DecodedBody, sourceGmailMessageId: string, p
     for (const content of representations) {
       if (Buffer.byteLength(content) > MAX_MESSAGE_BYTES) return { projects: [], diagnostics: ['html_limit'] };
       let result: ParseResult;
-      try { result = parse(content, sourceGmailMessageId, policy); }
+      try { result = parse === htmlProjects
+        ? htmlProjects(content, sourceGmailMessageId, policy, trace)
+        : textProjects(content, sourceGmailMessageId, policy); }
       catch { result = { projects: [], diagnostics: ['invalid_payload'] }; }
       if (result.diagnostics.includes('html_limit')) return result;
       diagnostics.push(...result.diagnostics);
@@ -260,6 +306,12 @@ export function parseProjects(body: DecodedBody, sourceGmailMessageId: string, p
   diagnostics.push(...best.diagnostics);
   if (!best.projects.length && !diagnostics.length) diagnostics.push('no_project_blocks');
   return dedup({ projects: best.projects, diagnostics });
+}
+export function parseProjects(body: DecodedBody, sourceGmailMessageId: string, policy?: ParserPolicy,
+  trace?: SmokeStructureDiagnostics): ParseResult {
+  const result = parseProjectsInternal(body, sourceGmailMessageId, policy, trace);
+  if (trace) trace.extracted_projects += result.projects.length;
+  return result;
 }
 function dedup(result: ParseResult): ParseResult {
   const seen = new Set<string>();

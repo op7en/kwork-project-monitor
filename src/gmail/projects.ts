@@ -1,15 +1,18 @@
 import type { GmailProjectReader, GmailFullMessage } from './client.js';
 import type { ParserPolicy, ParseResult } from '../kwork/model.js';
+import type { SmokeStructureDiagnostics } from '../smoke/structureDiagnostics.js';
 import { decodeMime, MAX_MESSAGE_BYTES } from './mime.js';
 import { isParserPolicy, parseProjects } from '../kwork/parser.js';
-export function parseGmailMessage(message: GmailFullMessage, policy?: ParserPolicy): ParseResult {
+export function parseGmailMessage(message: GmailFullMessage, policy?: ParserPolicy,
+  trace?: SmokeStructureDiagnostics): ParseResult {
   if (!message.id || !/^[A-Za-z0-9_-]{1,128}$/.test(message.id)) return { projects: [], diagnostics: ['invalid_payload'] };
   if (message.sizeEstimate !== undefined && message.sizeEstimate !== null &&
       (!Number.isSafeInteger(message.sizeEstimate) || message.sizeEstimate < 0 || message.sizeEstimate > MAX_MESSAGE_BYTES))
     return { projects: [], diagnostics: ['message_limit'] };
-  return parseProjects(decodeMime(message.payload), message.id, policy);
+  return parseProjects(decodeMime(message.payload, trace), message.id, policy, trace);
 }
-export async function readKworkProjects(reader: GmailProjectReader, ids: readonly string[], policy?: ParserPolicy): Promise<ParseResult> {
+export async function readKworkProjects(reader: GmailProjectReader, ids: readonly string[], policy?: ParserPolicy,
+  trace?: SmokeStructureDiagnostics): Promise<ParseResult> {
   if (!isParserPolicy(policy))
     return { projects: [], diagnostics: ['unconfirmed_policy'] };
   if (ids.length > 50) return { projects: [], diagnostics: ['batch_limit'] };
@@ -20,7 +23,7 @@ export async function readKworkProjects(reader: GmailProjectReader, ids: readonl
       const read = await reader.getProjectMessage(id);
       result.diagnostics.push(...read.diagnostics);
       if (!read.message) continue;
-      const parsed = parseGmailMessage(read.message, policy);
+      const parsed = parseGmailMessage(read.message, policy, trace);
       result.diagnostics.push(...parsed.diagnostics);
       for (const project of parsed.projects) {
         if (seen.has(project.projectId)) { result.diagnostics.push('duplicate_project'); continue; }

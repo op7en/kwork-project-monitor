@@ -1,5 +1,6 @@
 import { TextDecoder } from 'node:util';
 import type { Diagnostic } from '../kwork/model.js';
+import type { SmokeStructureDiagnostics } from '../smoke/structureDiagnostics.js';
 export interface MessagePart {
   mimeType?: string | null;
   filename?: string | null;
@@ -15,7 +16,7 @@ function object(value: unknown): Record<string, unknown> | undefined {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
     ? value as Record<string, unknown> : undefined;
 }
-export function decodeMime(payload: unknown): DecodedBody {
+export function decodeMime(payload: unknown, trace?: SmokeStructureDiagnostics): DecodedBody {
   const result: DecodedBody = { html: [], text: [], diagnostics: [] };
   let nodes = 0, encoded = 0, decoded = 0;
   let fatal: Diagnostic | undefined;
@@ -27,6 +28,19 @@ export function decodeMime(payload: unknown): DecodedBody {
     const item = pending.pop()!;
     if (++inputNodes > 128 || item.depth > 16) return { html: [], text: [], diagnostics: ['mime_limit'] };
     const part = object(item.value);
+    const mime = typeof part?.['mimeType'] === 'string' ? part['mimeType'].toLowerCase() : '';
+    if (trace && mime === 'text/html') trace.html_parts_before_decode++;
+    if (trace && mime === 'text/plain') trace.plain_parts_before_decode++;
+    const partHeaders = Array.isArray(part?.['headers']) ? part['headers'] : [];
+    const dispositions = partHeaders.flatMap(headerValue => {
+      const header = object(headerValue);
+      return typeof header?.['name'] === 'string' && header['name'].toLowerCase() === 'content-disposition' &&
+        typeof header['value'] === 'string' ? [header['value']] : [];
+    });
+    const dispositionSkips = dispositions.length > 1 || (dispositions.length === 1 &&
+      !/^\s*inline\s*(?:;|$)/i.test(dispositions[0]!));
+    if (trace && mime === 'text/html' && part?.['filename']) trace.html_parts_skipped_filename++;
+    else if (trace && mime === 'text/html' && dispositionSkips) trace.html_parts_skipped_content_disposition++;
     const data = object(part?.['body'])?.['data'];
     if (typeof data === 'string') encoded += data.length;
     if (encoded > MAX_ENCODED_BYTES) return { html: [], text: [], diagnostics: ['message_limit'] };
@@ -105,6 +119,10 @@ export function decodeMime(payload: unknown): DecodedBody {
   };
   visit(payload, 0, true);
   if (fatal) return { html: [], text: [], diagnostics: [fatal] };
+  if (trace) {
+    trace.html_parts_after_decode += result.html.length;
+    trace.plain_parts_after_decode += result.text.length;
+  }
   if (!result.html.length && !result.text.length) issue('empty_body');
   if (segments.length > 1) result.segments = segments;
   return result;

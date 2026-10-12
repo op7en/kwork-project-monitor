@@ -22,8 +22,9 @@ it('polling failure after readiness cancels the wait timer and reports only a fi
   const previousListeners = signals.map(signal => process.listeners(signal));
   let running = false;
   const stop = vi.fn(async () => { running = false; });
+  const apiUse = vi.fn();
   // Model grammY's documented rejection after onStart, with pollingRunning cleared.
-  const bot = { stop, isRunning: () => running, catch: vi.fn(),
+  const bot = { stop, isRunning: () => running, catch: vi.fn(), api: { config: { use: apiUse } },
     start: vi.fn(async (options: { onStart: () => void; drop_pending_updates: boolean }) => {
       expect(options.drop_pending_updates).toBe(true);
       running = true; options.onStart(); running = false;
@@ -34,7 +35,8 @@ it('polling failure after readiness cancels the wait timer and reports only a fi
   try {
     await import('../src/smoke/run.js'); // config and bot boundaries are mocked; no API calls
     expect(info).toHaveBeenCalledTimes(1);
-    expect(error).toHaveBeenCalledWith('Не удалось запустить smoke-бота.');
+    expect(apiUse).toHaveBeenCalledTimes(1);
+    expect(error).toHaveBeenCalledWith('Smoke startup failed: stage=telegram_startup; category=initialization_error');
     expect(JSON.stringify(error.mock.calls)).not.toContain('SYNTHETIC_PRIVATE');
     expect(process.exitCode).toBe(1);
     expect(stop).not.toHaveBeenCalled(); // grammY already stopped polling on failure
