@@ -2,6 +2,7 @@ import type { GmailConfig } from '../config/gmail.js';
 import { MAX_MESSAGE_BYTES, type MessagePart } from './mime.js';
 import type { Diagnostic } from '../kwork/model.js';
 import { KWORK_SUBJECT } from './kworkEmails.js';
+import type { MonitoringGmail } from './monitorClient.js';
 
 export interface GmailFullMessage { id?: string | null; sizeEstimate?: number | null; payload?: MessagePart | null }
 export interface GmailProjectReader {
@@ -30,23 +31,45 @@ function permittedMessage(message: GmailFullMessage, id: string, allowed: Readon
   return message.id === id && typeof message.sizeEstimate === 'number' && Number.isSafeInteger(message.sizeEstimate) &&
     message.sizeEstimate >= 0 && message.sizeEstimate <= MAX_MESSAGE_BYTES && trustedHeaders(message.payload?.headers, allowed);
 }
-export async function createGmailProjectReader(config: GmailConfig, allowedSenders: readonly string[]): Promise<GmailProjectReader> {
+interface ReaderOptions { notBefore?: number; shouldContinue?: () => boolean }
+function validFloor(floor: number | undefined): void {
+  if (floor !== undefined && (!Number.isSafeInteger(floor) || floor < 0))
+    throw new GmailError('Некорректная граница инициализации.', 'message_metadata', 'unknown_api_error');
+}
+function senderPolicy(allowedSenders: readonly string[]): ReadonlySet<string> {
   if (!Array.isArray(allowedSenders) || allowedSenders.length === 0 || allowedSenders.length > 20 ||
       allowedSenders.some(sender => typeof sender !== 'string' || sender.length > 254 || !mailboxPattern.test(sender))) {
     throw new GmailError('Требуется явно подтверждённый sender allowlist.', 'sender_policy', 'invalid_sender_policy');
   }
-  const allowed = new Set(allowedSenders.map(sender => sender.toLowerCase()));
-  const gmail = await verifiedGmailApi(config);
+  return new Set(allowedSenders.map(sender => sender.toLowerCase()));
+}
+export async function createGmailProjectReader(config: GmailConfig, allowedSenders: readonly string[],
+  options: ReaderOptions = {}): Promise<GmailProjectReader> {
+  validFloor(options.notBefore);
+  const allowed = senderPolicy(allowedSenders);
+  return projectReader(await verifiedGmailApi(config, options.shouldContinue), allowed, options);
+}
+function projectReader(gmail: Awaited<ReturnType<typeof verifiedGmailApi>>, allowed: ReadonlySet<string>,
+  options: ReaderOptions): GmailProjectReader {
   return {
     async getProjectMessage(id) {
+      if (options.shouldContinue && !options.shouldContinue()) return { diagnostics: ['operation_cancelled'] };
       if (!/^[A-Za-z0-9_-]{1,128}$/.test(id)) return { diagnostics: ['message_rejected'] };
       let metadata: GmailFullMessage;
       try {
         const { data } = await gmail.users.messages.get({ userId: 'me', id, format: 'metadata',
-          metadataHeaders: ['Subject', 'From'], fields: 'id,sizeEstimate,payload/headers' }, requestOptions);
+          metadataHeaders: ['Subject', 'From'], fields: options.notBefore === undefined
+            ? 'id,sizeEstimate,payload/headers' : 'id,internalDate,sizeEstimate,payload/headers' }, requestOptions);
         metadata = data;
       } catch (error: unknown) { throw safeApiError(error, 'message_metadata', 'Не удалось проверить metadata сообщения.'); }
       if (!permittedMessage(metadata, id, allowed)) return { diagnostics: ['message_rejected'] };
+      if (options.notBefore !== undefined) {
+        const internalDate = (metadata as GmailFullMessage & { internalDate?: string }).internalDate;
+        const timestamp = typeof internalDate === 'string' && /^\d{1,16}$/.test(internalDate) ? Number(internalDate) : NaN;
+        if (!Number.isSafeInteger(timestamp)) return { diagnostics: ['message_rejected'] };
+        if (timestamp < options.notBefore) return { diagnostics: ['historical_message'] };
+      }
+      if (options.shouldContinue && !options.shouldContinue()) return { diagnostics: ['operation_cancelled'] };
       let full: GmailFullMessage;
       try {
         const { data } = await gmail.users.messages.get({ userId: 'me', id, format: 'full', fields: 'id,sizeEstimate,payload' }, requestOptions);
@@ -67,10 +90,10 @@ const READONLY_GMAIL_SCOPES = new Set([
 const requestOptions = { timeout: 10_000, retry: false };
 
 export type GmailStage = 'access_token' | 'oauth_scopes' | 'profile' | 'account' |
-  'messages_list' | 'message_metadata' | 'message_full' | 'sender_policy';
+  'messages_list' | 'message_metadata' | 'message_full' | 'sender_policy' | 'history_cursor' | 'history_list';
 export type GmailErrorCategory = 'invalid_grant' | 'invalid_client' | 'access_denied' |
   'insufficient_scope' | 'network_error' | 'timeout' | 'unknown_oauth_error' |
-  'unknown_api_error' | 'unsafe_gmail_scope' | 'account_mismatch' | 'invalid_sender_policy';
+  'unknown_api_error' | 'unsafe_gmail_scope' | 'account_mismatch' | 'invalid_sender_policy' | 'history_expired' | 'operation_cancelled';
 
 export class GmailError extends Error {
   declare readonly httpStatus?: number;
@@ -129,7 +152,11 @@ export interface GmailClient {
   getMessageMetadata(id: string): Promise<GmailMetadata>;
 }
 
-async function verifiedGmailApi(config: GmailConfig) {
+async function verifiedGmailApi(config: GmailConfig, shouldContinue: () => boolean = () => true) {
+  const check = (stage: GmailStage): void => {
+    if (!shouldContinue()) throw new GmailError('Операция отменена.', stage, 'operation_cancelled');
+  };
+  check('access_token');
   const { google } = await import('googleapis');
   const auth = new google.auth.OAuth2({
     clientId: config.clientId,
@@ -139,6 +166,7 @@ async function verifiedGmailApi(config: GmailConfig) {
   auth.setCredentials({ refresh_token: config.refreshToken });
 
   let accessToken: string;
+  check('access_token'); // dynamic import above yields; stop may have arrived before the first request
   try {
     const { token } = await auth.getAccessToken();
     if (!token) throw new Error('Missing access token');
@@ -148,6 +176,7 @@ async function verifiedGmailApi(config: GmailConfig) {
   }
 
   let scopes: string[];
+  check('oauth_scopes');
   try {
     // A refresh token retains its original grants; setting a scope locally does
     // not narrow them. Inspect the actual token before accessing the mailbox.
@@ -169,6 +198,7 @@ async function verifiedGmailApi(config: GmailConfig) {
 
   const gmail = google.gmail({ version: 'v1', auth });
   let email: string | undefined;
+  check('profile');
   try {
     const { data } = await gmail.users.getProfile({ userId: 'me', fields: 'emailAddress' }, requestOptions);
     email = data.emailAddress?.trim().toLowerCase();
@@ -214,6 +244,40 @@ export async function createGmailClient(config: GmailConfig): Promise<GmailClien
         };
       } catch (error: unknown) {
         throw safeApiError(error, 'message_metadata', 'Не удалось получить metadata Gmail сообщения.');
+      }
+    },
+  };
+}
+
+/** One verified READ ONLY API instance shared by history discovery and the existing metadata/body gate. */
+export async function createGmailMonitoringClient(config: GmailConfig, notBefore?: number,
+  shouldContinue: () => boolean = () => true): Promise<MonitoringGmail> {
+  validFloor(notBefore);
+  const allowed = senderPolicy(['news@kwork.ru']);
+  const gmail = await verifiedGmailApi(config, shouldContinue);
+  return {
+    reader: projectReader(gmail, allowed, { ...(notBefore === undefined ? {} : { notBefore }), shouldContinue }),
+    async currentHistoryId() {
+      if (!shouldContinue()) throw new GmailError('Операция отменена.', 'history_cursor', 'operation_cancelled');
+      try {
+        const { data } = await gmail.users.getProfile({ userId: 'me', fields: 'historyId' }, requestOptions);
+        if (!data.historyId || !/^[1-9]\d{0,39}$/.test(data.historyId)) throw new Error('Invalid cursor');
+        return data.historyId;
+      } catch (error) { throw safeApiError(error, 'history_cursor', 'Не удалось проверить Gmail cursor.'); }
+    },
+    async historyPage(startHistoryId, pageToken) {
+      if (!shouldContinue()) throw new GmailError('Операция отменена.', 'history_list', 'operation_cancelled');
+      try {
+        const { data } = await gmail.users.history.list({ userId: 'me', startHistoryId, historyTypes: ['messageAdded'],
+          maxResults: 100, fields: 'historyId,nextPageToken,history(id,messagesAdded/message/id)',
+          ...(pageToken === undefined ? {} : { pageToken }) }, requestOptions);
+        return { historyId: data.historyId ?? '', ...(data.nextPageToken ? { nextPageToken: data.nextPageToken } : {}),
+          records: (data.history ?? []).map(record => ({ historyId: record.id ?? '',
+            messageIds: (record.messagesAdded ?? []).map(added => added.message?.id ?? '') })) };
+      } catch (error) {
+        const safe = safeApiError(error, 'history_list', 'Не удалось получить историю Gmail.');
+        if (safe.httpStatus === 404) throw new GmailError('Gmail cursor истёк.', 'history_list', 'history_expired', 404);
+        throw safe;
       }
     },
   };

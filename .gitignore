@@ -17,3 +17,11 @@ token*.json
 
 .DS_Store
 Thumbs.db
+
+# Private acceptance artifacts and persistent monitor state (including SQLite WAL/SHM).
+.local-acceptance/
+.local-state/
+*.sqlite-wal
+*.sqlite-shm
+*.sqlite.guard.json
+*.sqlite.guard.json.*.tmp

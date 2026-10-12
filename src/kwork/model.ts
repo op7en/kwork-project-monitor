@@ -22,7 +22,7 @@ export type Diagnostic = 'invalid_payload' | 'empty_body' | 'attachment_required
   'unsupported_mime' | 'invalid_base64url' | 'unsupported_charset' | 'invalid_text' |
   'message_limit' | 'mime_limit' | 'unconfirmed_policy' | 'html_limit' |
   'no_project_blocks' | 'ambiguous_block' | 'invalid_project' | 'invalid_optional' |
-  'duplicate_project' | 'message_rejected' | 'message_read_failed' | 'batch_limit';
+  'duplicate_project' | 'message_rejected' | 'message_read_failed' | 'batch_limit' | 'historical_message' | 'operation_cancelled';
 export interface ParseResult { projects: KworkProject[]; diagnostics: Diagnostic[] }
 export type UrlPolicy = { hostname: string; pathPrefix: string } |
   { hostname: 'kwork.ru'; pathname: '/new_offer'; projectParameter: 'project' };

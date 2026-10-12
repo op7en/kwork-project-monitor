@@ -54,7 +54,7 @@
   подключены к Gmail либо отправке проектов. Реальную отправку не запускай без разрешения.
 - Не логируй проекты/raw Telegram errors, не возвращай credentials/PII в диагностику.
 
-## Manual pipeline (Milestone 4.2)
+## Manual pipeline (Milestone 4.2, historical isolated components)
 
 - Один notifier и pipeline на экземпляр бота. Только ручной private owner handler
   `/projects` вызывает ленивый Gmail loader; startup, `/start`, `/help`, `/ping`
@@ -67,6 +67,42 @@
   повторно не отправляются даже при ошибке Telegram. Между проходами дедупа нет.
 - Извлечённые проекты не называй подходящими: фильтрация по стеку не реализована.
   Не запускай live pipeline без разрешения. Первый live smoke — отдельный one-shot harness (см. M4.3); не используй обычный `/projects` для первого smoke.
+
+## Persistent monitoring (Milestone 5)
+
+- Production `src/index.ts` подключает ленивый M5 runtime. `/projects` использует
+  тот же persistent pass, что scheduler; legacy M4.2 loader остаётся для offline
+  контрактов и не должен подключаться параллельно к production.
+- После каждого рестарта мониторинг OFF. Только настоящая private-owner
+  `/monitor on` подтверждает destination и включает scheduler. Не сохраняй opt-in
+  или destination между процессами; `/start` сам не активирует мониторинг.
+- SQLite `.local-state/monitor.sqlite`: IDs, cursor, классификации/коды и состояния,
+  без HTML/body/названий/credentials. Не публикуй state/WAL/SHM. Не удаляй ledger
+  автоматически при повреждении, блокировке или schema mismatch.
+- Первая активация — текущий history baseline без старых bodies. Gmail history 404
+  либо overflow отключает scheduler, cursor не продвигается. Только явный
+  `/monitor baseline` while OFF инициализирует только новую базу; повтор возвращает
+  baseline_exists без Gmail. Только `/monitor baseline confirm` while OFF явно
+  пропускает backlog существующей базы; project tombstones сохраняются.
+- Независимый `.sqlite.guard.json` содержит только epoch/revision. Missing DB с
+  сохранённым guard или DB старее guard — storage_error, без автоматического сброса.
+  Откат/удаление всей директории вместе с guard не обнаружим локально; не обещай обратного.
+- M5 live acceptance — только отдельный `src/monitor/acceptanceRun.ts`, без scheduler
+  и технических Telegram-ответов. Один выбранный новый ID, одна попытка за весь RUN,
+  максимум один gated reader/full body и один send; global ledger обязателен.
+  Несколько событий/проектов или несовпадение ID — остановка. Не запускать без разрешения.
+- Перед send резервируй projectId атомарно вместе с outcome письма. sent требует
+  API success; все неоднозначные/отрицательные send outcomes и orphan reservations
+  остаются delivery_unknown без retry. Потеря одной карточки при crash допустима
+  ради предотвращения дубликата. Не обещай exactly-once/один transport request.
+- Только match автоматически отправляется; review/exclude сохраняются как filtered.
+  Причины фиксированные, критерии в `src/filters/rules.ts`. Классификация не доказывает
+  реальный scope, сложность или адекватность бюджета; отсутствующие optional данные не угадываются.
+- MIME/parser failure — terminal parse_failed, без автоматического body reread.
+  Read errors — максимум три попытки в разных проходах, без immediate retries.
+  Ошибки discovery не продвигают cursor; ограничения не превращаются в truncation.
+- Off/shutdown запрещают новые операции и дожидаются текущего запроса перед закрытием
+  storage. Не запускай production или реальные Gmail/Telegram API для offline-тестов.
 
 ## One-shot smoke (Milestone 4.3)
 

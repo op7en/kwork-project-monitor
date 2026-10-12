@@ -1,6 +1,6 @@
 # Kwork Project Monitor
 
-Личный Telegram-бот для будущего мониторинга подходящих проектов Kwork.
+Личный Telegram-бот для мониторинга проектов Kwork.
 Проект разрабатывается поэтапно и предназначен также для портфолио.
 
 ## Текущий статус
@@ -18,9 +18,17 @@ Gmail body reader. Поддерживается подтверждённый в�
 «Название / Покупатель / Цена» и прямая ссылка `https://kwork.ru/new_offer?project=<ID>`.
 Локальная приёмка использует один обезличенный образец; это не доказывает поддержку
 всех будущих вариантов уведомлений. Вымышленный `synthetic-v1` сохранён отдельно.
-PostgreSQL, постоянная
-deduplication, filtering, автоматические notifications и AI ещё не реализованы.
-Telegram-бот поддерживает базовые команды и ручной проход `/projects` (Milestone 4.2).
+PostgreSQL и AI не реализованы. Постоянная дедупликация, deterministic filtering
+и управляемый scheduler реализованы в Milestone 5 и проверены offline;
+реальная автоматическая доставка M5 ещё не проверялась.
+Production `/projects` использует тот же persistent проход, что и scheduler.
+
+**Milestone 5 — offline-ready:** SQLite ledger переживает рестарт, Gmail discovery
+использует `historyId` и bounded pagination, classifier возвращает `match/review/exclude`.
+Автоматически отправляются только `match`. Мониторинг после каждого запуска выключен
+до настоящей owner-private команды `/monitor on`. Первая активация сохраняет baseline
+без чтения исторических bodies. Инструкции, state machine, ограничения и отдельный
+live acceptance plan: [Milestone 5](docs/milestone-5.md).
 
 Для подтверждённого шаблона явно передавайте `KWORK_TABLE_POLICY` из
 `src/kwork/parser.ts` в `parseGmailMessage` / `readKworkProjects`. Reader требует
@@ -77,7 +85,7 @@ Raw errors, текст проекта и credentials не логируются; 
 завершения 4.1 `src/index.ts` его ещё не создавал, команды не отправляли проекты.
 Эта связь добавлена в 4.2 ниже. Настоящая отправка в 4.1 не проверялась.
 
-**Milestone 4.2:** компоненты соединены в ручной pipeline. `src/index.ts` передаёт
+**Milestone 4.2 (исторический контракт):** компоненты соединены в ручной pipeline. В M4.2 `src/index.ts` передавал
 ленивый Gmail loader в `createBot`; один notifier и один pipeline создаются на
 экземпляр бота. `/start` подтверждает destination из настоящего owner private
 context, без Gmail-запросов. `/projects` также проверяет и подтверждает этот
@@ -538,12 +546,20 @@ pagination и безопасные ошибки через fake API boundary. П
 | `/start` | Приветствие, назначение бота и текущие ограничения |
 | `/help` | Список доступных команд |
 | `/ping` | `pong` |
-| `/projects` | Один ручной проход Gmail → parser → private notifications, без фильтрации и постоянной дедупликации |
+| `/projects` | Один persistent проход активированного M5 мониторинга; общая блокировка с scheduler |
+| `/monitor on` | Свежая активация из личного чата; первый запуск — metadata-only baseline |
+| `/monitor off` | Остановка новых операций, ожидание текущего запроса |
+| `/monitor status` | Состояние и фиксированные счётчики; без Gmail |
+| `/monitor baseline` | Первоначальная инициализация при OFF; повтор — baseline_exists без Gmail |
+| `/monitor baseline confirm` | Явно пропустить backlog при OFF; существующие project tombstones сохраняются |
 
 Бот принимает команды только от владельца, заданного через `TELEGRAM_OWNER_ID`,
 в его личном чате. Команды владельца из групп/supergroups игнорируются.
-Gmail metadata check запускается отдельно. Только ручная `/projects` вызывает
-Gmail pipeline; остальные команды к Gmail не обращаются.
+Gmail metadata check запускается отдельно. Startup, `/start`, `/help`, `/ping` и
+`/monitor status` не вызывают Gmail. `/monitor on`, `/monitor baseline`, включённый
+scheduler и `/projects` являются live-операциями и требуют отдельного разрешения
+для приёмки. Старые Telegram updates сбрасываются при startup, чтобы очередь
+прошлого запуска не активировала мониторинг.
 
 ## Структура
 
@@ -565,6 +581,15 @@ Gmail pipeline; остальные команды к Gmail не обращают
 - `src/smoke/controller.ts` — завершение временного бота: код выхода, консольный отчёт, остановка при успехе/ошибке/таймауте.
 - `src/smoke/run.ts` — ручной entry point `npm run smoke:once` (не запускать вместе с обычным ботом).
 - `src/index.ts` — запуск, безопасная обработка ошибок и остановка.
+- `src/monitor/store.ts` — SQLite ledger, атомарные reservations, session lock и restart recovery.
+- `src/monitor/discovery.ts` — полная ограниченная history pagination с верхней границей.
+- `src/monitor/pass.ts` — persistent проход, classifier и максимум одна попытка отправки projectId.
+- `src/monitor/controller.ts` — memory-only opt-in, общий scheduler/manual проход и drain.
+- `src/monitor/runtime.ts` — ленивые реальные adapters; конструктор не вызывает Gmail.
+- `src/monitor/ledgerGuard.ts` — независимый epoch/revision guard против потери/отката только базы.
+- `src/monitor/acceptance.ts`, `acceptanceBot.ts`, `acceptanceRun.ts` — отдельная ограниченная M5 live-приёмка без scheduler и технических Telegram-ответов; запуск только после разрешения.
+- `src/config/monitor.ts` — интервал и строгие лимиты; окружение не активирует мониторинг.
+- `src/filters/rules.ts` / `projectFilter.ts` — изменяемые правила и объяснимый classifier.
 - `tests/` — проверки без сети и настоящего токена.
 - `AGENTS.md` — постоянные правила работы AI-агентов.
 
@@ -575,12 +600,11 @@ Gmail pipeline; остальные команды к Gmail не обращают
 1. **Telegram bot** — Milestone 1, базовые команды.
 2. **Gmail integration** — Milestone 2, READ ONLY metadata с точной темой Kwork.
 3. **Kwork email parser** — типизированные проекты и очищенные тестовые письма.
-4. **PostgreSQL + deduplication** — хранение проектов без повторной обработки.
-5. **Rule-based filtering** — детерминированные правила под стек владельца.
-6. **Telegram notifications** — доставка новых подходящих проектов владельцу.
+4. **Telegram notifications** — M4.3, одна реальная карточка подтверждена.
+5. **Persistent monitoring** — M5.1/M5.2, SQLite, rules и scheduler; offline-проверки.
+6. **Live acceptance M5** — следующий отдельный этап, автоматическая доставка пока не подтверждена.
 7. **Deployment** — постоянный запуск приложения.
 8. **Optional LLM analysis** — дополнительный анализ после рабочего MVP.
 
-Milestone 2 заканчивается независимым Gmail smoke-test. Body parsing,
-извлечение проектов, БД, AI, уведомления и инфраструктура добавляются отдельными
-этапами после ручной проверки подключения.
+PostgreSQL/ORM, deployment и LLM не входят в M5. Для single-user состояния используется
+штатный `node:sqlite` без дополнительных npm-зависимостей или фоновых сервисов.
