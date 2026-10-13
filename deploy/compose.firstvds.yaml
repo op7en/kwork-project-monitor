@@ -1,0 +1,24 @@
+# FUTURE real test only after separate authorization. Merge with ../compose.yaml.
+# This file does not replace the separate-VPS scenario.
+name: kwork-firstvds
+services:
+  bot:
+    # A missing CLI --no-build must never turn into an unbounded VPS compilation.
+    build: !reset null
+    pull_policy: never
+    container_name: kwork-firstvds-bot
+    hostname: kwork-firstvds-bot
+    user: "21001:21001"
+    restart: "no"
+    cpus: 0.25
+    mem_limit: 384m
+    memswap_limit: 384m
+    pids_limit: 64
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=16m,mode=1777
+    command: ["sh", "-c", "umask 077; exec node dist/ops/start.js"]
+    logging:
+      driver: json-file
+      options:
+        max-size: "2m"
+        max-file: "2"

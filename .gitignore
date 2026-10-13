@@ -9,6 +9,9 @@ coverage/
 
 # Deployment secrets belong outside the checkout; also ignore accidental local copies.
 *.env
+*.env.*
+*.env~
+!*.env.example
 
 credentials*.json
 token*.json

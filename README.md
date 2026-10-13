@@ -37,6 +37,11 @@ live acceptance plan: [Milestone 5](docs/milestone-5.md).
 обновление, backup, восстановление и ограничения проверки:
 [Milestone 6](docs/milestone-6.md).
 
+Отдельный временный FirstVDS вариант и synthetic test: [shared-host](docs/m6-shared-host-test.md).
+Приватное редактирование ENV, offline validation и recreate одной копии:
+[управление ENV](docs/m6-env-management.md). Итоговые угрозы и границы готовности:
+[adversarial review](docs/m6-final-adversarial-review.md).
+
 Для подтверждённого шаблона явно передавайте `KWORK_TABLE_POLICY` из
 `src/kwork/parser.ts` в `parseGmailMessage` / `readKworkProjects`. Reader требует
 caller-supplied sender allowlist; подтверждение `news@kwork.ru` в ручной приёмке

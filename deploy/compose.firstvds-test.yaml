@@ -1,0 +1,45 @@
+# Standalone, credentials-free synthetic test. Never merge with production Compose.
+name: kwork-firstvds-test
+x-test-service: &test-service
+  image: kwork-project-monitor:${KWORK_RELEASE:?Set the published M6 SHA}
+  pull_policy: never
+  init: true
+  user: "21001:21001"
+  restart: "no"
+  network_mode: none
+  cpus: 0.25
+  mem_limit: 384m
+  memswap_limit: 384m
+  pids_limit: 64
+  stop_grace_period: 90s
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+  tmpfs:
+    - /tmp:rw,noexec,nosuid,nodev,size=16m,mode=1777
+  logging:
+    driver: json-file
+    options:
+      max-size: "2m"
+      max-file: "2"
+services:
+  smoke:
+    <<: *test-service
+    command: ["sh", "-c", "umask 077; exec node deploy/offline-smoke.mjs --state-dir /app/.local-state --wait-for-signal"]
+    volumes:
+      - type: bind
+        source: ${KWORK_TEST_STATE_DIR:?Set a fresh synthetic directory}
+        target: /app/.local-state
+        bind:
+          create_host_path: false
+  profile:
+    <<: *test-service
+    profiles: [profile]
+    command: ["node", "deploy/shared-host-probe.mjs"]
+    volumes:
+      - type: bind
+        source: ${KWORK_TEST_PROBE:?Set the absolute synthetic probe path}
+        target: /app/deploy/shared-host-probe.mjs
+        read_only: true
+        bind:
+          create_host_path: false

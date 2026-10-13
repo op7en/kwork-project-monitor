@@ -4,6 +4,13 @@ import { DatabaseSync } from 'node:sqlite';
 import { readLedgerGuard } from '../monitor/ledgerGuard.js';
 
 export class DeploymentStateError extends Error {}
+// Version1 writer uses positional INSERTs. Count/order/types/nullability/PK are part of its contract.
+const schema = {
+  meta: [['key', 'TEXT', 1, 1], ['value', 'TEXT', 1, 0]],
+  session: [['singleton', 'INTEGER', 0, 1], ['owner', 'TEXT', 1, 0], ['pid', 'INTEGER', 1, 0], ['host', 'TEXT', 1, 0]],
+  messages: [['id', 'TEXT', 1, 1], ['outcome', 'TEXT', 1, 0], ['attempts', 'INTEGER', 1, 0]],
+  projects: [['id', 'TEXT', 1, 1], ['classification', 'TEXT', 1, 0], ['reasons', 'TEXT', 1, 0], ['state', 'TEXT', 1, 0]],
+} as const;
 
 /** Deployment/transfer gate only. Never acquires a session, initializes or repairs M5 storage.
  * The writer must be stopped independently; this check is not a cross-host singleton lock.
@@ -21,6 +28,13 @@ export function checkDeploymentState(directory: string, expectedBinding?: string
     db.exec('PRAGMA query_only=ON; PRAGMA busy_timeout=1000');
     if (db.prepare('PRAGMA quick_check').get()?.['quick_check'] !== 'ok' ||
         db.prepare('PRAGMA user_version').get()?.['user_version'] !== 1) throw new DeploymentStateError('deployment_state_invalid');
+    const tables = db.prepare('PRAGMA table_list').all();
+    for (const [table, columns] of Object.entries(schema)) {
+      const actual = db.prepare(`PRAGMA table_info(${table})`).all().map(row => [row['name'], row['type'], row['notnull'], row['pk']]);
+      if (JSON.stringify(actual) !== JSON.stringify(columns) ||
+          !tables.some(row => row['schema'] === 'main' && row['name'] === table && row['type'] === 'table' && row['strict'] === 1))
+        throw new DeploymentStateError('deployment_state_invalid');
+    }
     const meta = (key: string) => db!.prepare('SELECT value FROM meta WHERE key=?').get(key)?.['value'];
     const epoch = meta('epoch'), revision = meta('revision');
     if (!guard || epoch !== guard.epoch || revision !== guard.revision) throw new DeploymentStateError('deployment_state_invalid');

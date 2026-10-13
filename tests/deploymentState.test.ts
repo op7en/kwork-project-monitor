@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync, copyFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { DatabaseSync } from 'node:sqlite';
@@ -43,6 +43,24 @@ it('refuses the wrong account or owner binding', () => {
   const f = fixture();
   expect(() => checkDeploymentState(f.dir, 'different-binding')).toThrow('deployment_binding_mismatch');
 });
+it.each(['meta', 'session', 'messages', 'projects'] as const)('rejects incompatible %s columns despite intact schema version and quick_check', table => {
+  const f = fixture(); const db = new DatabaseSync(f.path);
+  const column = { meta: 'key', session: 'owner', messages: 'outcome', projects: 'state' }[table]!;
+  db.exec(`ALTER TABLE ${table} RENAME COLUMN ${column} TO broken_column`);
+  expect(db.prepare('PRAGMA quick_check').get()?.['quick_check']).toBe('ok');
+  expect(db.prepare('PRAGMA user_version').get()?.['user_version']).toBe(1); db.close();
+  const before = readFileSync(f.path), guardBefore = readFileSync(f.guard);
+  expect(() => checkDeploymentState(f.dir)).toThrow('deployment_state_invalid');
+  expect(readFileSync(f.path)).toEqual(before); expect(readFileSync(f.guard)).toEqual(guardBefore);
+});
+it.each(['meta', 'session', 'messages', 'projects'] as const)('rejects extra %s columns that break positional writer inserts', table => {
+  const f = fixture(); const db = new DatabaseSync(f.path);
+  db.exec(`ALTER TABLE ${table} ADD COLUMN extra TEXT`);
+  expect(db.prepare('PRAGMA quick_check').get()?.['quick_check']).toBe('ok'); db.close();
+  const before = readFileSync(f.path), guardBefore = readFileSync(f.guard);
+  expect(() => checkDeploymentState(f.dir)).toThrow('deployment_state_invalid');
+  expect(readFileSync(f.path)).toEqual(before); expect(readFileSync(f.guard)).toEqual(guardBefore);
+});
 it.each(['behind', 'ahead', 'epoch', 'malformed'] as const)('refuses %s guard mismatch without repairing it', kind => {
   const f = fixture(); const value = JSON.parse(readFileSync(f.guard, 'utf8')) as { epoch: string; revision: string };
   if (kind === 'behind') value.revision = String(BigInt(value.revision) + 1n);
@@ -78,6 +96,23 @@ it('refuses restore below the independently retained current guard without chang
   value.epoch = '00000000-0000-0000-0000-000000000000'; writeFileSync(retained, JSON.stringify(value));
   expect(() => checkRestoreGuard(f.dir, retained)).toThrow('deployment_restore_refused');
   expect(() => checkRestoreGuard(f.dir, join(f.dir, 'missing-current-guard.json'))).toThrow('deployment_restore_refused');
+});
+it('refuses a synthetic copy omitting uncheckpointed WAL rather than using stale history', () => {
+  const f = fixture(); const db = new DatabaseSync(f.path);
+  db.exec('PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0');
+  const guard = JSON.parse(readFileSync(f.guard, 'utf8')) as { epoch: string; revision: string };
+  guard.revision = String(BigInt(guard.revision) + 1n);
+  db.exec('BEGIN IMMEDIATE');
+  db.prepare("UPDATE meta SET value=? WHERE key='history'").run('200');
+  db.prepare("UPDATE meta SET value=? WHERE key='revision'").run(guard.revision); db.exec('COMMIT');
+  writeFileSync(f.guard, JSON.stringify(guard));
+  const candidate = mkdtempSync(join(tmpdir(), 'kwork-wal-omitted-')); dirs.push(candidate);
+  try {
+    copyFileSync(f.path, join(candidate, 'monitor.sqlite'));
+    copyFileSync(f.guard, join(candidate, 'monitor.sqlite.guard.json'));
+    expect(() => checkDeploymentState(candidate)).toThrow('deployment_state_invalid');
+  } finally { db.close(); }
+  expect(() => checkDeploymentState(f.dir)).not.toThrow();
 });
 it('deployment startup rejects absent state before importing polling and never prints configuration values', () => {
   const dir = mkdtempSync(join(tmpdir(), 'kwork-deploy-start-')); dirs.push(dir);
