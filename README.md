@@ -30,6 +30,13 @@ Production `/projects` использует тот же persistent проход,
 без чтения исторических bodies. Инструкции, state machine, ограничения и отдельный
 live acceptance plan: [Milestone 5](docs/milestone-5.md).
 
+**Milestone 6 — подготовка VPS:** добавлены Dockerfile, Compose и отдельный
+контейнерный startup gate для существующих baseline/ledger/guard. Реальный сервер,
+перенос состояния и production запуск требуют отдельного разрешения.
+После каждого рестарта мониторинг остаётся OFF. Пошаговые установка, перенос,
+обновление, backup, восстановление и ограничения проверки:
+[Milestone 6](docs/milestone-6.md).
+
 Для подтверждённого шаблона явно передавайте `KWORK_TABLE_POLICY` из
 `src/kwork/parser.ts` в `parseGmailMessage` / `readKworkProjects`. Reader требует
 caller-supplied sender allowlist; подтверждение `news@kwork.ru` в ручной приёмке

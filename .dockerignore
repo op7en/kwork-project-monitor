@@ -1,0 +1,14 @@
+# Allowlist only: private files and generated/local state never enter build context.
+**
+!Dockerfile
+!.dockerignore
+!package.json
+!package-lock.json
+!tsconfig.json
+!tsconfig.build.json
+!src/
+src/**
+!src/**/*.ts
+!deploy/
+deploy/**
+!deploy/offline-smoke.mjs

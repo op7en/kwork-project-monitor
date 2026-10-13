@@ -1,0 +1,38 @@
+name: kwork-project-monitor
+services:
+  bot:
+    # Fixed name prevents scaling/accidental second Compose project on this Docker host.
+    # It cannot prevent a poller on another host; source shutdown is an operator gate.
+    container_name: kwork-project-monitor
+    hostname: kwork-project-monitor
+    image: kwork-project-monitor:${KWORK_RELEASE:?Set an explicit tested release tag}
+    build:
+      context: .
+      args:
+        NODE_IMAGE: ${KWORK_NODE_IMAGE:-node:24-bookworm-slim@sha256:d6aa754f16b3197301076f047b5def2f02ea1dbbc2ca920407d46d7ec7f87b20}
+    init: true
+    user: "1000:1000"
+    restart: unless-stopped
+    stop_grace_period: 90s
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 128
+    mem_limit: 512m
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=32m,mode=1777
+    env_file:
+      - path: ${KWORK_SECRETS_FILE:?Set the absolute bot.env path}
+        required: true
+        format: raw
+    volumes:
+      - type: bind
+        source: ${KWORK_STATE_DIR:?Set the existing absolute state directory}
+        target: /app/.local-state
+        bind:
+          create_host_path: false
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
