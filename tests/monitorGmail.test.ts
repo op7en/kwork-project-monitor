@@ -17,9 +17,18 @@ beforeEach(() => {
 it('reuses scope/account checks and asks only for additions with narrow history fields', async () => {
   const client = await createGmailMonitoringClient(config, 1000);
   expect(await client.currentHistoryId()).toBe('300');
+  expect(api.profile).toHaveBeenCalledTimes(2);
+  expect(api.profile).toHaveBeenLastCalledWith({ userId: 'me', fields: 'historyId' }, expect.any(Object));
   expect(await client.historyPage('100')).toEqual({ historyId: '300', records: [{ historyId: '200', messageIds: ['synthetic-message'] }] });
   expect(api.history.mock.calls[0]?.[0]).toMatchObject({ userId: 'me', startHistoryId: '100', historyTypes: ['messageAdded'], maxResults: 100 });
   expect(api.get).not.toHaveBeenCalled();
+});
+it('uses a fresh cursor after connect instead of the earlier account-verification snapshot', async () => {
+  const client = await createGmailMonitoringClient(config, 1000);
+  api.profile.mockResolvedValue({ data: { historyId: '400' } });
+  expect(await client.currentHistoryId()).toBe('400'); expect(api.profile).toHaveBeenCalledTimes(2);
+  api.profile.mockResolvedValue({ data: { historyId: '500' } });
+  expect(await client.currentHistoryId()).toBe('500'); expect(api.profile).toHaveBeenCalledTimes(3);
 });
 it.each(['scope', 'account'])('refuses %s mismatch before discovery or body', async kind => {
   if (kind === 'scope') api.scopes.mockResolvedValue({ scopes: ['https://mail.google.com/'] });

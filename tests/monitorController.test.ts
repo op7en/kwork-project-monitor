@@ -9,8 +9,8 @@ function setup() {
   vi.useFakeTimers();
   const run = vi.fn<(allowed: () => boolean, reset?: boolean) => Promise<PassResult>>(async () => completed);
   const close = vi.fn();
-  const create = vi.fn(() => ({ pass: { run }, store: { close, counts: () => ({ messages: 0, sent: 0, reserved: 0, filtered: 0, delivery_unknown: 0, review: 0, exclude: 0 }) } }));
-  const notifier = { hasConfirmedDestination: () => true };
+  const create = vi.fn(() => ({ pass: { run }, store: { close, cursor: () => ({ historyId: '100', floor: 1000 }), enabled: () => false, setEnabled: vi.fn(), counts: () => ({ messages: 0, sent: 0, reserved: 0, filtered: 0, delivery_unknown: 0, review: 0, exclude: 0 }) } }));
+  const notifier = { hasConfirmedDestination: () => true, restoreConfirmedDestination() {}, sendAlert: async () => true };
   const report = vi.fn();
   const monitor = createMonitorController(notifier, create, 1000, report);
   return { monitor, run, create, close, notifier, report };

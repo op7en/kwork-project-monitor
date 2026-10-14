@@ -12,11 +12,11 @@ it('extracts a project from the confirmed three-cell row with a distinct notific
   expect(run()).toEqual({projects:[{projectId:'9000001',title:'Синтетический интерфейс',
     url:'https://kwork.ru/new_offer?project=9000001',sourceGmailMessageId:'synthetic-table-message',
     details:'Синтетическое описание, интерфейсы',customerName:'Синтетический покупатель',hireRate:44,
-    customerStatistics:{exchangeProjects:33},price:{raw:'5 555 ₽',amount:5555,currency:'RUB'}}],diagnostics:[]});
+    customerStatistics:{exchangeProjects:33},price:{kind:'fixed',raw:'5 555 ₽',amount:5555,currency:'RUB'}}],diagnostics:[]});
 });
 it('binds contrasting titles, prices and statistics within each row of one table', () => {
   const result=run(`<table><tbody>${TABLE_HEADER}${TABLE_ROW}${second}</tbody></table>`);
-  expect(result.projects.map(p=>[p.projectId,p.title,p.price?.amount,p.customerName,p.hireRate,p.customerStatistics?.exchangeProjects]))
+  expect(result.projects.map(p=>[p.projectId,p.title,(p.price?.kind === 'fixed' ? p.price.amount : undefined),p.customerName,p.hireRate,p.customerStatistics?.exchangeProjects]))
     .toEqual([['9000001','Синтетический интерфейс',5555,'Синтетический покупатель',44,33],
       ['9000002','Синтетическая интеграция',8888,'Синтетический покупатель B',77,66]]);
 });
@@ -25,13 +25,13 @@ it('keeps absent optional data absent without borrowing from the next row', () =
   expect(run(`<table>${TABLE_HEADER}${first}${second}</table>`).projects[0]).toEqual({projectId:'9000001',title:'Synthetic A',
     url:'https://kwork.ru/new_offer?project=9000001',sourceGmailMessageId:'synthetic-table-message'});
 });
-it.each(['100','до 100 ₽','10–20 ₽','USD 100','100 ₽ 200 ₽'])('does not invent an uncertain notification price: %s', raw => {
+it.each(['100','USD 100','100 ₽ 200 ₽'])('does not invent an uncertain notification price: %s', raw => {
   const result=run(TABLE_HTML.replace('5 555 ₽',raw));
   expect(result.projects).toHaveLength(1);expect(result.projects[0]).not.toHaveProperty('price');
   expect(result.projects[0]).not.toHaveProperty('budget');expect(result.diagnostics).toContain('invalid_optional');
 });
 it.each(['5\u00a0555 ₽','5\u202f555 ₽','0 ₽'])('supports integer RUB notification price %s', raw=>{
-  expect(run(TABLE_HTML.replace('5 555 ₽',raw)).projects[0]?.price).toEqual({raw,amount:raw==='0 ₽'?0:5555,currency:'RUB'});
+  expect(run(TABLE_HTML.replace('5 555 ₽',raw)).projects[0]?.price).toEqual({kind:'fixed',raw,amount:raw==='0 ₽'?0:5555,currency:'RUB'});
 });
 it('extracts stats only with confirmed labels and retains zero',()=>{
   const unlabelled=run(TABLE_HTML.replace('33 проектов на бирже','33').replace('44% нанято','44%')).projects[0];
@@ -92,7 +92,7 @@ it('rejects conflicting project titles or IDs in the first cell',()=>{
 });
 it('deduplicates by ID and keeps the first price and provenance',async()=>{
   const result=run(`<table>${TABLE_HEADER}${TABLE_ROW}${TABLE_ROW.replace('5 555 ₽','8 888 ₽')}</table>`);
-  expect(result.projects).toHaveLength(1);expect(result.projects[0]?.price?.amount).toBe(5555);
+  expect(result.projects).toHaveLength(1);expect(result.projects[0]?.price).toMatchObject({kind:'fixed',amount:5555});
   expect(result.diagnostics).toContain('duplicate_project');
   const reader={async getProjectMessage(id:string){return {message:{id,payload:{mimeType:'text/html',body:{data:Buffer.from(TABLE_HTML).toString('base64url')}}},diagnostics:[]};}};
   expect((await readKworkProjects(reader,['first','second'],TABLE_POLICY)).projects[0]?.sourceGmailMessageId).toBe('first');
@@ -103,7 +103,7 @@ it('runs synthetic Gmail payload through MIME and table parser, without inventin
     {mimeType:'text/html',headers:[{name:'Content-Type',value:'text/html; charset=UTF-8'}],body:{data:Buffer.from(TABLE_HTML).toString('base64url')}},
   ]}},TABLE_POLICY);
   expect(result.projects).toHaveLength(1);expect(result.projects[0]?.sourceGmailMessageId).toBe('synthetic-offline');
-  expect(result.projects[0]?.price?.amount).toBe(5555);
+  expect(result.projects[0]?.price).toMatchObject({kind:'fixed',amount:5555});
   expect(parseProjects({html:[],text:['Проект: Fake\nСсылка: https://kwork.ru/new_offer?project=9000001'],diagnostics:[]},'synthetic',TABLE_POLICY).projects).toEqual([]);
 });
 it('keeps scripts, hidden fields, instructions and images inert without output or network',()=>{
@@ -111,7 +111,7 @@ it('keeps scripts, hidden fields, instructions and images inert without output o
   const info=vi.spyOn(console,'info').mockImplementation(()=>{});
   try{
     const html=TABLE_HTML.replace('5 555 ₽','5 555 ₽<script>throw Error("SYNTHETIC_PRIVATE")</script><span hidden>999 ₽</span>')+'<iframe src="https://example.invalid"></iframe>';
-    expect(run(html).projects[0]?.price?.amount).toBe(5555);
+    expect(run(html).projects[0]?.price).toMatchObject({kind:'fixed',amount:5555});
     expect(fetch).not.toHaveBeenCalled();expect(info).not.toHaveBeenCalled();
   }finally{vi.restoreAllMocks();}
 });

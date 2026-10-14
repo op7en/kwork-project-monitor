@@ -19,7 +19,7 @@ function setup() {
   const run = vi.fn(async () => result), legacy = vi.fn();
   let monitor!: ReturnType<typeof createMonitorController>;
   const bot = createBot('test-only-placeholder', owner, legacy, notifier => {
-    monitor = createMonitorController(notifier, () => ({ pass: { run }, store: { counts: () => emptyCounts, close: () => {} } }), 1000);
+    monitor = createMonitorController(notifier, () => ({ pass: { run }, store: { counts: () => emptyCounts, close: () => {}, cursor: () => undefined, enabled: () => false, setEnabled: () => {} } }), 1000);
     return monitor;
   });
   bot.botInfo = info; const requests: string[] = [];
@@ -43,7 +43,7 @@ it.each([[owner, true], [owner + 1, false]] as const)('cannot enable from foreig
     await s.bot.handleUpdate(update(command, user, group));
   expect(s.monitor.status().enabled).toBe(false); expect(s.requests).toEqual([]); expect(s.run).not.toHaveBeenCalled();
 });
-it('requires fresh on after restart, shares /projects pass and honors off', async () => {
+it('keeps a fresh instance OFF without restore, shares /projects pass and honors off', async () => {
   const s = setup(); await s.bot.handleUpdate(update('/monitor on'));
   expect(s.monitor.status().enabled).toBe(true); expect(s.run).toHaveBeenCalledTimes(1);
   await s.bot.handleUpdate(update('/projects')); expect(s.run).toHaveBeenCalledTimes(2); expect(s.legacy).not.toHaveBeenCalled();

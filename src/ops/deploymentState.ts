@@ -17,9 +17,17 @@ const schema = {
  * SQLite may create WAL/SHM bookkeeping on a writable mount, but ledger/guard are read-only.
  */
 export function checkDeploymentState(directory: string, expectedBinding?: string): void {
+  checkState(directory, expectedBinding, false);
+}
+/** Startup gate only: recovery is deferred to MonitorStore; this function never initializes state. */
+export function checkRuntimeState(directory: string, expectedBinding: string): void {
+  checkState(directory, expectedBinding, true);
+}
+function checkState(directory: string, expectedBinding: string | undefined, runtime: boolean): void {
   const path = join(directory, 'monitor.sqlite'), guardPath = path + '.guard.json';
   let db: DatabaseSync | undefined;
   try {
+    if (runtime && !existsSync(path) && !existsSync(guardPath)) return;
     if (!existsSync(path) || !existsSync(guardPath)) throw new DeploymentStateError('deployment_state_missing');
     if (!lstatSync(directory).isDirectory() || !lstatSync(path).isFile() || !lstatSync(guardPath).isFile() ||
         lstatSync(path).size === 0) throw new DeploymentStateError('deployment_state_invalid');
@@ -37,15 +45,18 @@ export function checkDeploymentState(directory: string, expectedBinding?: string
     }
     const meta = (key: string) => db!.prepare('SELECT value FROM meta WHERE key=?').get(key)?.['value'];
     const epoch = meta('epoch'), revision = meta('revision');
-    if (!guard || epoch !== guard.epoch || revision !== guard.revision) throw new DeploymentStateError('deployment_state_invalid');
+    if (!guard || epoch !== guard.epoch || typeof revision !== 'string' || !/^\d{1,40}$/.test(revision) ||
+        (runtime ? BigInt(revision) < BigInt(guard.revision) || BigInt(revision) > BigInt(guard.revision) + 1n : revision !== guard.revision))
+      throw new DeploymentStateError('deployment_state_invalid');
     const history = meta('history'), floor = meta('floor');
-    if (typeof history !== 'string' || !/^[1-9]\d{0,39}$/.test(history) ||
-        typeof floor !== 'string' || !/^\d+$/.test(floor) || !Number.isSafeInteger(Number(floor)))
+    const validBaseline = typeof history === 'string' && /^[1-9]\d{0,39}$/.test(history) &&
+      typeof floor === 'string' && /^\d+$/.test(floor) && Number.isSafeInteger(Number(floor));
+    if ((!runtime || history !== undefined || floor !== undefined) && !validBaseline)
       throw new DeploymentStateError('deployment_baseline_missing');
     const binding = meta('binding');
     if (typeof binding !== 'string' || !/^[a-f0-9]{64}$/.test(binding)) throw new DeploymentStateError('deployment_state_invalid');
     if (expectedBinding !== undefined && binding !== expectedBinding) throw new DeploymentStateError('deployment_binding_mismatch');
-    if (db.prepare('SELECT count(*) AS n FROM session').get()?.['n'] !== 0) throw new DeploymentStateError('deployment_state_busy');
+    if (!runtime && db.prepare('SELECT count(*) AS n FROM session').get()?.['n'] !== 0) throw new DeploymentStateError('deployment_state_busy');
     // Ensure both persistent outcome tables are readable without enumerating private identities.
     db.prepare('SELECT count(*) FROM messages').get(); db.prepare('SELECT count(*) FROM projects').get();
   } catch (error: unknown) {

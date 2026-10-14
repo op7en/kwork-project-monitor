@@ -18,7 +18,8 @@ function setup(ids: string[] = ['synthetic-a']) {
       TABLE_ROW.replace('Синтетический интерфейс', 'Исправить React баг') + '</table>').toString('base64url') },
   } } }));
   const historyPage = vi.fn(async () => ({ historyId: '300', records: [{ historyId: '200', messageIds: ids }] }));
-  const client: MonitoringGmail = { currentHistoryId: async () => '300', historyPage, reader: { getProjectMessage: read } };
+  const client: MonitoringGmail = { currentHistoryId: async () => '300', historyPage,
+    reader: { getProjectMessage: read } };
   const sent: string[] = [];
   const notifier = { hasConfirmedDestination: () => true, send: vi.fn(async (p: { projectId: string }) => {
     sent.push(p.projectId); return { status: 'sent' as const };
@@ -90,15 +91,17 @@ it('shares one active pass and stops before reservation/send after a pending rea
   allowed = false; resolveRead(response);
   expect((await running).status).toBe('stopped'); expect(s.sent).toEqual([]); expect(s.store.counts().messages).toBe(0);
 });
-it('handles multiple projects in one message but sends only match classifications', async () => {
+it('handles multiple projects and sends match and review while filtering exclude', async () => {
   const s = setup(); s.store.baseline('100', 1000);
   const rows = [['9000001', 'Исправить React баг'], ['9000002', 'React'], ['9000003', 'WordPress исправить баг']]
     .map(([id, title]) => TABLE_ROW.replaceAll('9000001', id!).replace('Синтетический интерфейс', title!)).join('');
   s.read.mockResolvedValue({ diagnostics: [], message: { id: 'synthetic-a', payload: { mimeType: 'text/html',
     body: { data: Buffer.from('<table>' + TABLE_HEADER + rows + '</table>').toString('base64url') } } } });
-  expect(await s.pass.run()).toMatchObject({ status: 'completed', found: 3, match: 1, review: 1, exclude: 1, sent: 1 });
-  expect(s.store.counts()).toMatchObject({ sent: 1, filtered: 2 });
+  expect(await s.pass.run()).toMatchObject({ status: 'completed', found: 3, match: 1, review: 1, exclude: 1, sent: 2 });
+  expect(s.store.counts()).toMatchObject({ sent: 2, filtered: 1 });
   expect(s.store.counts()).toMatchObject({ review: 1, exclude: 1 });
+  expect(s.notifier.send).toHaveBeenNthCalledWith(2, expect.objectContaining({ projectId: '9000002' }),
+    { classification: 'review', reasons: ['insufficient_evidence'] });
 });
 it('bounds temporary read retries to three later passes without moving cursor on the first failures', async () => {
   const s = setup(); s.store.baseline('100', 1000); s.read.mockRejectedValue(new Error('synthetic-timeout'));

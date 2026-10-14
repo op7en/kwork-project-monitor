@@ -11,7 +11,7 @@ export interface KworkProject {
   sourceGmailMessageId: string;
   budget?: { unspecified?: BudgetValue; desired?: BudgetValue; maximum?: BudgetValue };
   /** Price displayed in the notification; no desired/maximum-budget meaning is inferred. */
-  price?: { raw: string; currency: 'RUB'; amount: number };
+  price?: BudgetValue;
   /** Text below the linked title, including category text where it is not separately labelled. */
   details?: string;
   customerName?: string;

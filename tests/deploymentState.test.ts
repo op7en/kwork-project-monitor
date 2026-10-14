@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync, copyFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync, copyFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { DatabaseSync } from 'node:sqlite';
@@ -114,8 +114,10 @@ it('refuses a synthetic copy omitting uncheckpointed WAL rather than using stale
   } finally { db.close(); }
   expect(() => checkDeploymentState(f.dir)).not.toThrow();
 });
-it('deployment startup rejects absent state before importing polling and never prints configuration values', () => {
+it('deployment startup rejects an incomplete state pair before importing polling and never prints configuration values', () => {
   const dir = mkdtempSync(join(tmpdir(), 'kwork-deploy-start-')); dirs.push(dir);
+  mkdirSync(join(dir, '.local-state'));
+  writeFileSync(join(dir, '.local-state', 'monitor.sqlite.guard.json'), 'synthetic-invalid-guard');
   const entry = new URL('../src/ops/start.ts', import.meta.url).pathname;
   const result = spawnSync(process.execPath, ['--import', new URL('../node_modules/tsx/dist/loader.mjs', import.meta.url).href,
     decodeURIComponent(process.platform === 'win32' ? entry.slice(1) : entry)], {

@@ -44,7 +44,7 @@ describe('verified readonly Gmail boundary', () => {
     expect(api.getTokenInfo).toHaveBeenCalledWith('test-access-token');
     expect(api.getAccessToken.mock.invocationCallOrder[0]).toBeLessThan(api.getTokenInfo.mock.invocationCallOrder[0]!);
     expect(api.getTokenInfo.mock.invocationCallOrder[0]).toBeLessThan(api.getProfile.mock.invocationCallOrder[0]!);
-    expect(api.getProfile).toHaveBeenCalledWith({ userId: 'me', fields: 'emailAddress' }, expect.any(Object));
+    expect(api.getProfile).toHaveBeenCalledWith({ userId: 'me', fields: 'emailAddress,historyId' }, expect.any(Object));
     expect(api.list).not.toHaveBeenCalled();
     await client.listMessages('subject:Test', 10);
     expect(api.getProfile.mock.invocationCallOrder[0]).toBeLessThan(api.list.mock.invocationCallOrder[0]!);

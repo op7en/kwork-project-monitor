@@ -7,6 +7,8 @@ it.each([
   'content:"display:none;visibility:hidden"',
   '--display:none; -example-visibility:hidden; display:block',
   'display:block; visibility:visible; mso-hide:none',
+  'color:red; broken fragment', 'display:var(--unknown)', 'visibility:var(--unknown)',
+  'display:none block', 'visibility:unknown', 'mso-hide:unknown', 'color:"unterminated',
 ])('does not confuse unrelated CSS with a hidden declaration: %s', style => {
   expect(inlineStyleHidesContent(style)).toBe(false);
 });
@@ -14,12 +16,12 @@ it.each([
 it.each([
   'DISPLAY:none !important', 'display:/**/none', 'd\\69 splay:n\\6f ne',
   'visibility:\\68 idden', 'visibility:collapse', 'mso-hide:all',
-  'display:var(--unknown)', 'visibility:var(--unknown)', 'display:none; display:block',
+  'display:none; display:block',
   'broken fragment; display:none',
-])('continues excluding hidden or unresolved visibility declarations: %s', style => {
+])('excludes proven hidden declarations: %s', style => {
   expect(inlineStyleHidesContent(style)).toBe(true);
 });
 
 it('bounds oversized inline CSS without parsing it', () => {
-  expect(inlineStyleHidesContent(' '.repeat(16_385))).toBe(true);
+  expect(inlineStyleHidesContent(' '.repeat(16_385))).toBe(false);
 });

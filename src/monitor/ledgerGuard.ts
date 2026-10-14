@@ -18,7 +18,16 @@ export function writeLedgerGuard(path: string, value: LedgerGuard): void {
   try {
     fd = openSync(temporary, 'wx', 0o600);
     writeFileSync(fd, JSON.stringify(value)); fsyncSync(fd); closeSync(fd); fd = undefined;
-    renameSync(temporary, path);
+    for (let attempt = 0; ; attempt++) {
+      try { renameSync(temporary, path); break; }
+      catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        // Windows scanners may briefly hold the destination. Retry only the atomic rename,
+        // never a DB transaction/send, and never unlink the independently retained guard.
+        if (process.platform !== 'win32' || !['EPERM', 'EACCES'].includes(code ?? '') || attempt >= 9) throw error;
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);
+      }
+    }
   } finally {
     if (fd !== undefined) closeSync(fd);
     if (existsSync(temporary)) unlinkSync(temporary);

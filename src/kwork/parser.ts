@@ -183,7 +183,7 @@ function tableProjects(root: HTMLElement, source: string, policy: ParserPolicy,
       const raw = priceCell.text.trim();
       if (raw) {
         const value = parseBudget(raw);
-        if (value?.kind === 'fixed') project.price = { raw, currency: value.currency, amount: value.amount };
+        if (value) project.price = value;
         else result.diagnostics.push('invalid_optional');
       }
       result.projects.push(project);

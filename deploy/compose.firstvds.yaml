@@ -9,7 +9,7 @@ services:
     container_name: kwork-firstvds-bot
     hostname: kwork-firstvds-bot
     user: "21001:21001"
-    restart: "no"
+    restart: unless-stopped
     cpus: 0.25
     mem_limit: 384m
     memswap_limit: 384m

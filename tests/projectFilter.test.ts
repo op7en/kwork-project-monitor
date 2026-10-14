@@ -29,7 +29,7 @@ it('uses details and available optional metrics without inventing missing values
   expect(classifyProject(project('Нужно исправить баг', 'React TypeScript интерфейс')).classification).toBe('match');
   expect(classifyProject({ ...project('Исправить React баг'), hireRate: 10,
     customerStatistics: { exchangeProjects: 20 } })).toMatchObject({ classification: 'review', reasons: ['customer_caution'] });
-  expect(classifyProject({ ...project('React: большой магазин с нуля'), price: { currency: 'RUB', amount: 1000, raw: '1000 ₽' } })
+  expect(classifyProject({ ...project('React: большой магазин с нуля'), price: {kind:'fixed', currency: 'RUB', amount: 1000, raw: '1000 ₽' } })
     .reasons).toContain('scope_budget_caution');
 });
 it.each([
@@ -39,7 +39,7 @@ it.each([
   ['Добавить функционал fullstack React Node.js платформы с нуля', undefined],
   ['Нужна доработка', 'Ранее использовали React. Сейчас нужна другая технология.'],
 ] as const)('does not confidently match ambiguous or negated stack: %s', (title, details) => {
-  expect(classifyProject({ ...project(title, details), price: { amount: 1000, currency: 'RUB', raw: '1000 ₽' } }).classification).toBe('review');
+  expect(classifyProject({ ...project(title, details), price: {kind:'fixed', amount: 1000, currency: 'RUB', raw: '1000 ₽' } }).classification).toBe('review');
 });
 it.each([
   ['Добавить кнопку в WordPress, JavaScript', 'review'],

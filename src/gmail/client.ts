@@ -47,9 +47,9 @@ export async function createGmailProjectReader(config: GmailConfig, allowedSende
   options: ReaderOptions = {}): Promise<GmailProjectReader> {
   validFloor(options.notBefore);
   const allowed = senderPolicy(allowedSenders);
-  return projectReader(await verifiedGmailApi(config, options.shouldContinue), allowed, options);
+  return projectReader((await verifiedGmailApi(config, options.shouldContinue)).gmail, allowed, options);
 }
-function projectReader(gmail: Awaited<ReturnType<typeof verifiedGmailApi>>, allowed: ReadonlySet<string>,
+function projectReader(gmail: Awaited<ReturnType<typeof verifiedGmailApi>>['gmail'], allowed: ReadonlySet<string>,
   options: ReaderOptions): GmailProjectReader {
   return {
     async getProjectMessage(id) {
@@ -97,17 +97,48 @@ export type GmailErrorCategory = 'invalid_grant' | 'invalid_client' | 'access_de
 
 export class GmailError extends Error {
   declare readonly httpStatus?: number;
+  declare readonly code?: string;
 
   constructor(message: string, readonly stage: GmailStage,
-    readonly category: GmailErrorCategory, httpStatus?: number) {
+    readonly category: GmailErrorCategory, httpStatus?: number, code?: string) {
     super(message);
     this.name = 'GmailError';
     if (httpStatus !== undefined) this.httpStatus = httpStatus;
+    if (code !== undefined && SAFE_CODES.has(code)) this.code = code;
   }
 }
 
 function record(value: unknown): Record<string, unknown> | undefined {
   return typeof value === 'object' && value !== null ? value as Record<string, unknown> : undefined;
+}
+
+export interface SafeErrorDetails {
+  stage: string; category: string; name: string; code?: string; httpStatus?: number; sqliteCode?: number; apiErrorCode?: number;
+}
+const SAFE_CODES = new Set(['storage_error', 'storage_busy', 'ERR_SQLITE_ERROR', 'SQLITE_BUSY', 'SQLITE_LOCKED',
+  'SQLITE_CORRUPT', 'SQLITE_FULL', 'SQLITE_READONLY', 'SQLITE_IOERR', 'ENOENT', 'ENOSPC', 'EIO', 'EROFS',
+  'ETIMEDOUT', 'ECONNABORTED', 'ENOTFOUND', 'EAI_AGAIN', 'ECONNREFUSED', 'ECONNRESET', 'ENETUNREACH', 'EHOSTUNREACH',
+  'EPERM', 'EACCES', 'CERT_HAS_EXPIRED', 'UNABLE_TO_VERIFY_LEAF_SIGNATURE', 'UNABLE_TO_GET_ISSUER_CERT_LOCALLY',
+  'ERR_TLS_CERT_ALTNAME_INVALID']);
+const SAFE_NAMES = new Set(['Error', 'TypeError', 'RangeError', 'SyntaxError', 'GmailError', 'StorageError',
+  'ConfigError', 'DeploymentStateError', 'EnvValidationError', 'GrammyError', 'HttpError', 'TimeoutError', 'AbortError']);
+/** Select known scalar fields only. Never retain messages, URLs, payloads, headers or raw causes. */
+export function safeErrorDetails(error: unknown, stage: string): SafeErrorDetails {
+  const raw = record(error), response = record(raw?.['response']), transport = record(raw?.['error']);
+  const code = raw?.['code'] ?? record(raw?.['cause'])?.['code'] ?? transport?.['code'];
+  const name = raw?.['name'];
+  const status = error instanceof GmailError ? error.httpStatus : response?.['status'] ?? transport?.['status'] ?? transport?.['statusCode'];
+  const details: SafeErrorDetails = { stage: error instanceof GmailError ? error.stage : stage,
+    category: error instanceof GmailError ? error.category : 'operation_failed',
+    name: typeof name === 'string' && SAFE_NAMES.has(name) ? name : 'Error' };
+  if (typeof code === 'string' && SAFE_CODES.has(code)) details.code = code;
+  if (typeof status === 'number' && Number.isInteger(status) && status >= 100 && status <= 599) details.httpStatus = status;
+  const apiCode = raw?.['error_code'];
+  if (typeof apiCode === 'number' && Number.isInteger(apiCode) && apiCode >= 100 && apiCode <= 599) details.apiErrorCode = apiCode;
+  const sqliteCode = raw?.['errcode'];
+  if (typeof sqliteCode === 'number' && Number.isSafeInteger(sqliteCode) && sqliteCode >= 0 && sqliteCode <= 65535)
+    details.sqliteCode = sqliteCode;
+  return details;
 }
 
 function safeApiError(error: unknown, stage: GmailStage, message: string): GmailError {
@@ -134,7 +165,7 @@ function safeApiError(error: unknown, stage: GmailStage, message: string): Gmail
       'UNABLE_TO_GET_ISSUER_CERT_LOCALLY', 'ERR_TLS_CERT_ALTNAME_INVALID',
     ].includes(code)) category = 'network_error';
   }
-  return new GmailError(message, stage, category, httpStatus);
+  return new GmailError(message, stage, category, httpStatus, safeErrorDetails(error, stage).code);
 }
 
 export interface GmailMetadata {
@@ -200,7 +231,7 @@ async function verifiedGmailApi(config: GmailConfig, shouldContinue: () => boole
   let email: string | undefined;
   check('profile');
   try {
-    const { data } = await gmail.users.getProfile({ userId: 'me', fields: 'emailAddress' }, requestOptions);
+    const { data } = await gmail.users.getProfile({ userId: 'me', fields: 'emailAddress,historyId' }, requestOptions);
     email = data.emailAddress?.trim().toLowerCase();
   } catch (error: unknown) {
     throw safeApiError(error, 'profile', 'Не удалось проверить Gmail аккаунт.');
@@ -209,11 +240,11 @@ async function verifiedGmailApi(config: GmailConfig, shouldContinue: () => boole
     throw new GmailError('Gmail аккаунт не соответствует GMAIL_EXPECTED_ACCOUNT_EMAIL. Операция остановлена.',
       'account', 'account_mismatch');
   }
-  return gmail;
+  return { gmail };
 }
 
 export async function createGmailClient(config: GmailConfig): Promise<GmailClient> {
-  const gmail = await verifiedGmailApi(config);
+  const { gmail } = await verifiedGmailApi(config);
 
   // Return only read operations after both permission and identity checks pass.
   return {
@@ -254,11 +285,12 @@ export async function createGmailMonitoringClient(config: GmailConfig, notBefore
   shouldContinue: () => boolean = () => true): Promise<MonitoringGmail> {
   validFloor(notBefore);
   const allowed = senderPolicy(['news@kwork.ru']);
-  const gmail = await verifiedGmailApi(config, shouldContinue);
+  const { gmail } = await verifiedGmailApi(config, shouldContinue);
   return {
     reader: projectReader(gmail, allowed, { ...(notBefore === undefined ? {} : { notBefore }), shouldContinue }),
     async currentHistoryId() {
       if (!shouldContinue()) throw new GmailError('Операция отменена.', 'history_cursor', 'operation_cancelled');
+      // Fresh upper fence after connect/account verification; do not reuse the earlier profile snapshot.
       try {
         const { data } = await gmail.users.getProfile({ userId: 'me', fields: 'historyId' }, requestOptions);
         if (!data.historyId || !/^[1-9]\d{0,39}$/.test(data.historyId)) throw new Error('Invalid cursor');

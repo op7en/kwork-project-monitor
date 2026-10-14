@@ -7,7 +7,7 @@ import type { KworkProject } from '../src/kwork/model.js';
 const ownerId=7654321;
 const project:KworkProject={projectId:'9000001',url:'https://kwork.ru/new_offer?project=9000001',
   title:'<b>Synthetic & _project_</b>',details:'[Synthetic](https://example.invalid)',
-  sourceGmailMessageId:'SYNTHETIC_PRIVATE_PROVENANCE',price:{raw:'5 555 ₽',amount:5555,currency:'RUB'}};
+  sourceGmailMessageId:'SYNTHETIC_PRIVATE_PROVENANCE',price:{kind:'fixed',raw:'5 555 ₽',amount:5555,currency:'RUB'}};
 const privateContext:OwnerChatContext={from:{id:ownerId,is_bot:false,first_name:'Synthetic owner'},
   chat:{id:ownerId,type:'private',first_name:'Synthetic owner'}};
 
@@ -26,6 +26,18 @@ function mockApi(failure?:'telegram'|'transport') {
 }
 
 describe('Private project notifications with mock Telegram API',()=>{
+  it('allows alerts only to a confirmed owner and restores trusted destination without a forged update', async () => {
+    const {api,requests}=mockApi(); const notifier=createProjectNotifier(api,ownerId);
+    expect(await notifier.sendAlert('Synthetic service alert')).toBe(false); expect(requests).toEqual([]);
+    notifier.restoreConfirmedDestination();
+    expect(await notifier.sendAlert('Synthetic service alert')).toBe(true);
+    expect(requests).toEqual([{method:'sendMessage',payload:{chat_id:ownerId,text:'Synthetic service alert'}}]);
+  });
+  it('contains alert delivery failures without retries or recursive messages', async () => {
+    const {api,requests}=mockApi('transport'); const notifier=createProjectNotifier(api,ownerId);
+    notifier.restoreConfirmedDestination();
+    expect(await notifier.sendAlert('Synthetic service alert')).toBe(false); expect(requests).toHaveLength(1);
+  });
   it('sends literal text and the validated button only after a private owner context confirms the destination',async()=>{
     const {api,requests}=mockApi();const notifier=createProjectNotifier(api,ownerId);
     expect(notifier.confirmDestination(privateContext)).toBe(true);

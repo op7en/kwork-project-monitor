@@ -5,7 +5,15 @@ import { hostname } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import type { FilterDecision } from '../filters/projectFilter.js';
 import { readLedgerGuard, writeLedgerGuard } from './ledgerGuard.js';
-export class StorageError extends Error { constructor(code = 'storage_error') { super(code); } }
+import { safeErrorDetails, type SafeErrorDetails } from '../gmail/client.js';
+export class StorageError extends Error {
+  readonly diagnostic: SafeErrorDetails;
+  constructor(readonly code = 'storage_error', error?: unknown, stage = 'storage') {
+    super(code); this.name = 'StorageError'; this.diagnostic = safeErrorDetails(error ?? this, stage);
+  }
+}
+// PID reuse recovery must not let another store in this process steal a live session.
+const openStores = new Set<string>();
 export const HISTORY_ID = /^[1-9]\d{0,39}$/;
 const MESSAGE_ID = /^[A-Za-z0-9_-]{1,128}$/;
 export type MessageOutcome = 'parsed' | 'parse_failed' | 'rejected' | 'historical';
@@ -22,9 +30,12 @@ export class MonitorStore {
   private closed = false;
   private readonly owner = randomUUID();
   private readonly guardPath: string;
+  private readonly pathKey: string;
   constructor(path: string, binding: string) {
     this.guardPath = path + '.guard.json';
+    this.pathKey = process.platform === 'win32' ? resolve(path).toLowerCase() : resolve(path);
     try {
+      if (openStores.has(this.pathKey)) throw new StorageError('storage_busy');
       if (!binding || path.startsWith('\\\\')) throw new StorageError();
       const existed = existsSync(path);
       const guard = readLedgerGuard(this.guardPath);
@@ -53,17 +64,23 @@ export class MonitorStore {
         } else if (version !== 1) throw new StorageError();
         if (this.db.prepare("SELECT value FROM meta WHERE key='binding'").get()?.['value'] !== binding) throw new StorageError();
         const current = this.guardValue();
-        // DB may be ahead after a crash between SQL commit and sidecar update, never behind.
-        if (guard && (guard.epoch !== current.epoch || BigInt(current.revision) < BigInt(guard.revision))) throw new StorageError();
+        const lag = guard ? BigInt(current.revision) - BigInt(guard.revision) : 0n;
+        // Exactly one committed transaction may be missing its sidecar update; larger gaps are not recovery.
+        if (guard && (guard.epoch !== current.epoch || lag < 0n || lag > 1n)) throw new StorageError();
         const session = this.db.prepare('SELECT pid,host FROM session').get();
-        if (session && (session['host'] !== hostname() || typeof session['pid'] !== 'number' || alive(session['pid'])))
+        if (session && (session['host'] !== hostname() || typeof session['pid'] !== 'number' ||
+            (session['pid'] !== process.pid && alive(session['pid']))))
           throw new StorageError('storage_busy');
+        // current already belongs to the committed DB. Repair before our next revision, so a second crash
+        // cannot turn the allowed one-step gap into two. No uncommitted revision is published here.
+        if (guard && lag === 1n) writeLedgerGuard(this.guardPath, current);
         this.db.exec("DELETE FROM session; UPDATE projects SET state='delivery_unknown' WHERE state='reserved'");
         this.db.prepare('INSERT INTO session VALUES (1, ?, ?, ?)').run(this.owner, process.pid, hostname());
       });
+      openStores.add(this.pathKey);
     } catch (error) {
       try { this.db?.close(); } catch { /* no raw errors */ }
-      throw error instanceof StorageError ? error : new StorageError();
+      throw error instanceof StorageError ? error : new StorageError('storage_error', error, 'storage_open');
     }
   }
   private transaction<T>(work: () => T): T {
@@ -80,7 +97,7 @@ export class MonitorStore {
       return result;
     } catch (error) {
       try { this.db.exec('ROLLBACK'); } catch { /* no raw errors */ }
-      throw error instanceof StorageError ? error : new StorageError();
+      throw error instanceof StorageError ? error : new StorageError('storage_error', error, 'storage_transaction');
     }
   }
   private guardValue() {
@@ -91,7 +108,21 @@ export class MonitorStore {
     return { epoch, revision };
   }
   private safe<T>(work: () => T): T {
-    try { if (this.closed) throw new StorageError(); return work(); } catch { throw new StorageError(); }
+    try { if (this.closed) throw new StorageError(); return work(); }
+    catch (error) { throw error instanceof StorageError ? error : new StorageError('storage_error', error, 'storage_read'); }
+  }
+  enabled(): boolean {
+    return this.safe(() => {
+      const value = this.db.prepare("SELECT value FROM meta WHERE key='enabled'").get()?.['value'];
+      if (value !== undefined && value !== '0' && value !== '1') throw new StorageError();
+      return value === '1';
+    });
+  }
+  setEnabled(value: boolean): void {
+    this.transaction(() => {
+      if (typeof value !== 'boolean') throw new StorageError();
+      this.db.prepare('INSERT OR REPLACE INTO meta VALUES (?, ?)').run('enabled', value ? '1' : '0');
+    });
   }
   cursor(): Cursor | undefined {
     return this.safe(() => {
@@ -148,7 +179,7 @@ export class MonitorStore {
       const reserved: string[] = [];
       for (const entry of decisions) {
         if (!/^[1-9]\d{0,79}$/.test(entry.projectId)) throw new StorageError();
-        const state = entry.classification === 'match' ? 'reserved' : 'filtered';
+        const state = entry.classification === 'exclude' ? 'filtered' : 'reserved';
         const inserted = this.db.prepare('INSERT OR IGNORE INTO projects VALUES (?, ?, ?, ?)').run(
           entry.projectId, entry.classification, JSON.stringify(entry.reasons), state);
         if (state === 'reserved' && inserted.changes === 1) reserved.push(entry.projectId);
@@ -179,7 +210,9 @@ export class MonitorStore {
   }
   close(): void {
     if (this.closed) return;
-    try { this.db.prepare('DELETE FROM session WHERE owner=?').run(this.owner); }
-    finally { this.closed = true; this.db.close(); }
+    try {
+      try { this.db.prepare('DELETE FROM session WHERE owner=?').run(this.owner); }
+      finally { this.closed = true; try { this.db.close(); } finally { openStores.delete(this.pathKey); } }
+    } catch (error) { throw new StorageError('storage_error', error, 'storage_close'); }
   }
 }

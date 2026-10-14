@@ -4,6 +4,7 @@ import { createProjectNotifier } from './projectNotifications.js';
 import { createProjectPipeline } from './projectPipeline.js';
 import type { ParseResult } from '../kwork/model.js';
 import type { MonitorController } from '../monitor/controller.js';
+import { safeErrorDetails } from '../gmail/client.js';
 
 export function createBot(token: string, ownerId: number, loadProjects?: () => Promise<ParseResult>,
   monitorFactory?: (notifier: ReturnType<typeof createProjectNotifier>) => MonitorController): Bot {
@@ -13,7 +14,7 @@ export function createBot(token: string, ownerId: number, loadProjects?: () => P
   const pipeline = !monitor && loadProjects ? createProjectPipeline(notifier, loadProjects) : undefined;
   const background = (operation: Promise<unknown>): void => {
     // Long polling awaits handlers sequentially. Release the update so /monitor off can cancel a pass.
-    void operation.catch(() => { console.error('monitor_control_error'); });
+    void operation.catch(error => { console.error(JSON.stringify({ event: 'monitor_control_error', ...safeErrorDetails(error, 'monitor_command') })); });
   };
 
   bot.use(async (ctx, next) => {
@@ -24,7 +25,7 @@ export function createBot(token: string, ownerId: number, loadProjects?: () => P
     notifier.confirmDestination(ctx);
     await ctx.reply(
       'Привет! Это Kwork Project Monitor — бот для мониторинга подходящих проектов Kwork.\n' +
-      (monitor ? 'Мониторинг включается через /monitor on в этом личном чате; состояние — /monitor status.\n' :
+      (monitor ? 'Мониторинг включается через /monitor on в этом личном чате и восстанавливается после рестарта. Состояние — /monitor status.\n' :
         'Сейчас доступны базовые команды. Автоматический мониторинг появится в следующих этапах.\n') +
       'Список команд: /help',
     );

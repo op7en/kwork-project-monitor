@@ -45,11 +45,12 @@
   и chat.id владельца. Owner ID не разрешает ответ либо уведомление в группу (F3).
 - Используй KworkProject и plaintext formatter без parse_mode/entities;
   URL кнопки повторно валидируется существующей Kwork policy, ID должен совпасть.
-- Project notifier подтверждает destination только из настоящего private owner
-  Telegram context. Произвольный chat ID/контекст из письма не является подтверждением.
+- Project notifier подтверждает destination из настоящего private owner Telegram context
+  либо trusted runtime restore после проверки binding, baseline и persisted opt-in.
+  Произвольный chat ID/контекст из письма не является подтверждением.
   Отправка всегда адресуется ownerId, групповые/чужие updates не меняют destination.
-- Подтверждение — только память одного экземпляра. После перезапуска destination
-  неподтверждён до нового корректного private взаимодействия и вызова trusted handler.
+- Новый notifier неподтверждён; `restoreConfirmedDestination()` разрешён только trusted
+  runtime после проверки связки binding + baseline + `meta.enabled=1`, не по данным письма.
 - В 4.1 notifier проверяется только через mock Telegram API; startup/handlers не
   подключены к Gmail либо отправке проектов. Реальную отправку не запускай без разрешения.
 - Не логируй проекты/raw Telegram errors, не возвращай credentials/PII в диагностику.
@@ -73,9 +74,22 @@
 - Production `src/index.ts` подключает ленивый M5 runtime. `/projects` использует
   тот же persistent pass, что scheduler; legacy M4.2 loader остаётся для offline
   контрактов и не должен подключаться параллельно к production.
-- После каждого рестарта мониторинг OFF. Только настоящая private-owner
-  `/monitor on` подтверждает destination и включает scheduler. Не сохраняй opt-in
-  или destination между процессами; `/start` сам не активирует мониторинг.
+- Настоящая private-owner `/monitor on` сохраняет `meta.enabled=1` при наличии baseline
+  или после его первичной инициализации. Startup восстанавливает destination и scheduler
+  только при валидных binding, baseline и enabled=1. `/start` сам мониторинг не активирует.
+  `/monitor off` и фатальный PAUSE сохраняют enabled=0; shutdown не сбрасывает opt-in.
+- Интервал — 1..1440 минут, дефолт 5. На PAUSE отправляй один понятный alert
+  подтверждённому владельцу; ошибка отправки не запускает рекурсию.
+- Runtime-preflight допускает отсутствие обоих state-файлов и отсутствие baseline,
+  но не одинокий DB/guard, неверные schema/binding/epoch или DB позади guard.
+  Непустая session проверяется MonitorStore; sidecar восстанавливается только при том же epoch
+  и `current.revision === guard.revision + 1`. Больший разрыв — ошибка, без автоматического исправления.
+  Независимый CURRENT guard при restore не ослабляй; currentHistoryId после connect должен быть актуальным запросом.
+  Строгий checkDeploymentState для переноса не ослабляй: baseline, пустая session,
+  точное равенство ревизий обязательны.
+- Same-PID recovery допускается при совпавшем hostname; повторное открытие ledger
+  внутри процесса блокируется. WAL не гарантирует единственного писателя между контейнерами:
+  сохраняй одну установку/один poller и не обещай межконтейнерную эксклюзивность.
 - SQLite `.local-state/monitor.sqlite`: IDs, cursor, классификации/коды и состояния,
   без HTML/body/названий/credentials. Не публикуй state/WAL/SHM. Не удаляй ledger
   автоматически при повреждении, блокировке или schema mismatch.
@@ -95,14 +109,19 @@
   API success; все неоднозначные/отрицательные send outcomes и orphan reservations
   остаются delivery_unknown без retry. Потеря одной карточки при crash допустима
   ради предотвращения дубликата. Не обещай exactly-once/один transport request.
-- Только match автоматически отправляется; review/exclude сохраняются как filtered.
+- Match и review резервируются и автоматически отправляются; только exclude сохраняется как filtered.
+  Review-карточка содержит «На проверку» и русские причины. maxSends — мягкий бюджет
+  между письмами; начатый дайджест завершается целиком в пределах parser cap.
   Причины фиксированные, критерии в `src/filters/rules.ts`. Классификация не доказывает
   реальный scope, сложность или адекватность бюджета; отсутствующие optional данные не угадываются.
-- MIME/parser failure — terminal parse_failed, без автоматического body reread.
+- Глобальные MIME/parser ошибки и лимиты — terminal parse_failed, без автоматического body reread.
+  Локальные invalid_project/ambiguous_block/invalid_optional/duplicate_project не отменяют валидные строки.
   Read errors — максимум три попытки в разных проходах, без immediate retries.
   Ошибки discovery не продвигают cursor; ограничения не превращаются в truncation.
 - Off/shutdown запрещают новые операции и дожидаются текущего запроса перед закрытием
   storage. Не запускай production или реальные Gmail/Telegram API для offline-тестов.
+- Диагностика — только разрешённые stage/category/name/HTTP/OS/SQLite codes;
+  не логируй raw error.message, URL, headers, request/config, body или произвольный cause.
 
 ## One-shot smoke (Milestone 4.3)
 

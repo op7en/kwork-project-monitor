@@ -25,15 +25,22 @@ Production `/projects` использует тот же persistent проход,
 
 **Milestone 5 — offline-ready:** SQLite ledger переживает рестарт, Gmail discovery
 использует `historyId` и bounded pagination, classifier возвращает `match/review/exclude`.
-Автоматически отправляются только `match`. Мониторинг после каждого запуска выключен
-до настоящей owner-private команды `/monitor on`. Первая активация сохраняет baseline
+Автоматически отправляются `match` и `review`; у `review` в карточке видны статус «На проверку» и причины.
+Настоящая owner-private команда `/monitor on` сохраняет opt-in в SQLite `meta.enabled`.
+После рестарта мониторинг восстанавливается только при совпадении binding владельца/аккаунта,
+наличии baseline и `enabled=1`. `/monitor off` и фатальный PAUSE сохраняют `enabled=0`;
+SIGINT/SIGTERM сохраняют прежний opt-in. Первая активация сохраняет baseline
 без чтения исторических bodies. Инструкции, state machine, ограничения и отдельный
 live acceptance plan: [Milestone 5](docs/milestone-5.md).
 
 **Milestone 6 — подготовка VPS:** добавлены Dockerfile, Compose и отдельный
-контейнерный startup gate для существующих baseline/ledger/guard. Реальный сервер,
+строгий gate переноса и отдельный runtime-preflight. Реальный сервер,
 перенос состояния и production запуск требуют отдельного разрешения.
-После каждого рестарта мониторинг остаётся OFF. Пошаговые установка, перенос,
+Runtime-preflight разрешает чистый bootstrap без DB и guard; наличие только одного файла,
+неверная схема/binding или DB позади guard запрещают запуск. Незавершённая session и DB впереди
+guard ровно на один шаг при одинаковом epoch восстанавливаются MonitorStore; больший разрыв запрещён.
+Строгий `stateCheckRun.ts` по-прежнему требует baseline,
+пустую session и равенство ревизий. Пошаговые установка, перенос,
 обновление, backup, восстановление и ограничения проверки:
 [Milestone 6](docs/milestone-6.md).
 
@@ -41,6 +48,24 @@ live acceptance plan: [Milestone 5](docs/milestone-5.md).
 Приватное редактирование ENV, offline validation и recreate одной копии:
 [управление ENV](docs/m6-env-management.md). Итоговые угрозы и границы готовности:
 [adversarial review](docs/m6-final-adversarial-review.md).
+
+**Текущая политика Этапов А/Б имеет приоритет над историческими инструкциями M5/M6:**
+интервал `MONITOR_INTERVAL_MINUTES` — 1–1440 минут, по умолчанию 5; FirstVDS использует
+`restart: unless-stopped`. Это настройки исходников, не подтверждение production deploy.
+`MONITOR_MAX_SENDS` — мягкий бюджет между письмами: начатый дайджест обрабатывается целиком
+в пределах parser cap; следующее письмо откладывается с `partial` без PAUSE.
+Верхняя граница history запрашивается отдельно через актуальный `currentHistoryId()` после connect,
+без подмены более ранним снимком проверки аккаунта. Независимый CURRENT guard для restore не ослаблен.
+Локальная ошибка строки не отменяет независимо валидные проекты; глобальные ошибки MIME/HTML
+и превышение лимитов остаются terminal `parse_failed`.
+При фатальном PAUSE подтверждённому владельцу отправляется один сервисный alert;
+логи содержат структурированные stage/category/HTTP/OS/SQLite codes без raw errors и содержимого писем.
+Отправку alert при недоступном Telegram гарантировать нельзя. Истёкший history cursor
+не сбрасывается автоматически: `baseline confirm` явно пропускает backlog и сохраняет tombstones.
+PID/session защита и WAL рассчитаны на одну установку с одним писателем; WAL не является
+межконтейнерной блокировкой на весь срок жизни процесса. Старый PID другого живого процесса
+или session другого hostname блокирует открытие. Одинаковый PID допускается при recovery;
+второе открытие того же пути внутри процесса блокируется отдельно.
 
 Для подтверждённого шаблона явно передавайте `KWORK_TABLE_POLICY` из
 `src/kwork/parser.ts` в `parseGmailMessage` / `readKworkProjects`. Reader требует
@@ -50,7 +75,7 @@ caller-supplied sender allowlist; подтверждение `news@kwork.ru` в 
 
 Каждая запись извлекается из своей строки с тремя прямыми ячейками под точными
 подписями колонок. Вложенные/объединённые неоднозначные ячейки пропускаются.
-`price` — целая сумма RUB из колонки «Цена»; она не становится желаемым или
+`price` — нормализованная цена RUB (`fixed`, `up-to`, `from`, `range`) из колонки «Цена»; она не становится желаемым или
 максимальным бюджетом. `details` хранит текст под названием, включая категорию:
 неподтверждённую границу описания/категории парсер не угадывает. Статистика
 `customerStatistics.exchangeProjects` и `hireRate` извлекается только по подписям
@@ -78,11 +103,12 @@ Formatter использует существующий `KworkProject`: назв
 Текст передаётся без `parse_mode`/`entities`, HTML/Markdown остаются буквальными
 символами. Управляющие/bidi-символы удаляются, заголовок остаётся одной строкой;
 длинный текст сокращается до 4000 UTF-16 единиц без разрыва surrogate pair.
-Цена форматируется из нормализованной суммы RUB, не из недоверенного `raw`;
+Цена форматируется из нормализованных чисел и вида цены RUB, не из недоверенного `raw`;
 `budget` не переименовывается в цену. Link preview отключён.
 
 `createProjectNotifier(api, ownerId)` возвращает `confirmDestination(ctx)` и
-`send(project)`. Подтверждение принимает только настоящий Telegram context
+`send(project, decision?)`, `sendAlert(text)` и trusted `restoreConfirmedDestination()`.
+Обычное подтверждение принимает только настоящий Telegram context
 владельца в его private chat; контекст нельзя восстанавливать из письма или
 произвольного внешнего ввода. Групповые/чужие updates не могут подтвердить либо
 заменить destination. Отправка всегда адресуется настроенному владельцу.
@@ -90,9 +116,9 @@ Formatter использует существующий `KworkProject`: назв
 `invalid_project`, при ошибке API — `telegram_error`, при успехе — `sent`.
 Raw errors, текст проекта и credentials не логируются; автоматического retry нет.
 
-Подтверждение хранится только в памяти одного экземпляра sender. После перезапуска
-новый экземпляр неподтверждён до нового корректного взаимодействия владельца
-в личном чате и вызова `confirmDestination` его trusted handler. В 4.1 sender —
+Новый sender изначально неподтверждён. Production runtime восстанавливает подтверждение
+только из проверенной связки binding + baseline + persisted opt-in, без подделки Telegram context.
+Иначе требуется взаимодействие владельца в личном чате. Исторически в 4.1 sender —
 отдельный подготовленный API-модуль, проверенный с mock Telegram API. На момент
 завершения 4.1 `src/index.ts` его ещё не создавал, команды не отправляли проекты.
 Эта связь добавлена в 4.2 ниже. Настоящая отправка в 4.1 не проверялась.
@@ -473,8 +499,9 @@ parameter `project`; остальные query parameters не подтвержд
 HTML/JS/resources не исполняются и не загружаются. Inline CSS разбирается через
 `css-tree` как список деклараций (лимит 16 KiB на атрибут), без рендеринга и загрузки
 ресурсов. Комментарии и escapes в посторонних свойствах не делают элемент скрытым.
-`display:none`, `visibility:hidden/collapse`, `mso-hide:all`, неизвестные выражения
-видимости и неразбираемые декларации исключаются вместе с соответствующим поддеревом.
+Только доказанные `display:none`, `visibility:hidden/collapse`, `mso-hide:all` исключают
+соответствующее поддерево. Неизвестные выражения и неразбираемые CSS-фрагменты сами по себе
+не скрывают проекты; при превышении лимита CSS разбор пропускается без удаления поддерева.
 Diagnostics содержат только фиксированные коды, без body/headers/credentials.
 
 Дедупликация: первый валидный projectId в порядке переданных писем/блоков сохраняет
@@ -560,15 +587,16 @@ pagination и безопасные ошибки через fake API boundary. П
 | `/ping` | `pong` |
 | `/projects` | Один persistent проход активированного M5 мониторинга; общая блокировка с scheduler |
 | `/monitor on` | Свежая активация из личного чата; первый запуск — metadata-only baseline |
-| `/monitor off` | Остановка новых операций, ожидание текущего запроса |
+| `/monitor off` | Сохранение OFF в SQLite, остановка новых операций, ожидание текущего запроса |
 | `/monitor status` | Состояние и фиксированные счётчики; без Gmail |
 | `/monitor baseline` | Первоначальная инициализация при OFF; повтор — baseline_exists без Gmail |
 | `/monitor baseline confirm` | Явно пропустить backlog при OFF; существующие project tombstones сохраняются |
 
 Бот принимает команды только от владельца, заданного через `TELEGRAM_OWNER_ID`,
 в его личном чате. Команды владельца из групп/supergroups игнорируются.
-Gmail metadata check запускается отдельно. Startup, `/start`, `/help`, `/ping` и
-`/monitor status` не вызывают Gmail. `/monitor on`, `/monitor baseline`, включённый
+Gmail metadata check запускается отдельно. `/start`, `/help`, `/ping` и
+`/monitor status` не вызывают Gmail. Startup вызывает Gmail только при валидном persisted opt-in и baseline.
+`/monitor on`, `/monitor baseline`, включённый
 scheduler и `/projects` являются live-операциями и требуют отдельного разрешения
 для приёмки. Старые Telegram updates сбрасываются при startup, чтобы очередь
 прошлого запуска не активировала мониторинг.
@@ -578,7 +606,7 @@ scheduler и `/projects` являются live-операциями и треб�
 - `src/bot/bot.ts` — создание бота и private handlers; импорт не запускает polling.
 - `src/bot/privateChat.ts` — общий guard владельца и private destination.
 - `src/bot/projectFormatter.ts` — чистая подготовка текста и проверенной URL-кнопки.
-- `src/bot/projectNotifications.ts` — sender с подтверждением только в памяти и безопасными результатами.
+- `src/bot/projectNotifications.ts` — private-owner sender, trusted restore и сервисные alerts.
 - `src/bot/projectPipeline.ts` — один ручной проход, блокировка overlap и дедупликация перед отправкой.
 - `src/config/env.ts` — чтение и проверка переменных окружения.
 - `src/config/gmail.ts` — отдельная Gmail-конфигурация.
@@ -596,7 +624,7 @@ scheduler и `/projects` являются live-операциями и треб�
 - `src/monitor/store.ts` — SQLite ledger, атомарные reservations, session lock и restart recovery.
 - `src/monitor/discovery.ts` — полная ограниченная history pagination с верхней границей.
 - `src/monitor/pass.ts` — persistent проход, classifier и максимум одна попытка отправки projectId.
-- `src/monitor/controller.ts` — memory-only opt-in, общий scheduler/manual проход и drain.
+- `src/monitor/controller.ts` — persisted opt-in, startup restore, общий scheduler/manual проход, alerts и drain.
 - `src/monitor/runtime.ts` — ленивые реальные adapters; конструктор не вызывает Gmail.
 - `src/monitor/ledgerGuard.ts` — независимый epoch/revision guard против потери/отката только базы.
 - `src/monitor/acceptance.ts`, `acceptanceBot.ts`, `acceptanceRun.ts` — отдельная ограниченная M5 live-приёмка без scheduler и технических Telegram-ответов; запуск только после разрешения.

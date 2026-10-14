@@ -34,7 +34,7 @@ it('runs metadata-first reader → MIME → confirmed table using only synthetic
   api.get.mockResolvedValueOnce({data:metadata}).mockResolvedValueOnce({data:full});
   const reader=await createGmailProjectReader(config,[SYNTHETIC_SENDER]);
   const result=await readKworkProjects(reader,['synthetic-message-1'],TABLE_POLICY);
-  expect(result.projects.map(p=>[p.projectId,p.price?.amount,p.sourceGmailMessageId])).toEqual([['9000001',5555,'synthetic-message-1']]);
+  expect(result.projects.map(p=>[p.projectId,(p.price?.kind === 'fixed' ? p.price.amount : undefined),p.sourceGmailMessageId])).toEqual([['9000001',5555,'synthetic-message-1']]);
   expect(api.get.mock.calls.map(c=>c[0].format)).toEqual(['metadata','full']);
 });
 it('requires explicit sender policy before authentication or access', async () => {

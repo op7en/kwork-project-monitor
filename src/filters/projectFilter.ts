@@ -11,11 +11,14 @@ export function classifyProject(project: KworkProject, rules: FilterRules = FILT
   const done = (classification: Classification, ...reasons: FilterReason[]): FilterDecision => ({ classification, reasons });
   if (unwanted) return primary || auxiliary ? done('review', 'mixed_stack') : done('exclude', 'unwanted_stack');
   if (has(rules.ambiguous)) return done('review', 'insufficient_evidence');
+  const price = project.price;
+  const ceiling = price?.kind === 'fixed' ? price.amount : price?.kind === 'up-to' || price?.kind === 'range' ? price.max : undefined;
   if (has(rules.complex)) return done('review', 'complex_scope',
-    ...(project.price?.currency === 'RUB' && Number.isFinite(project.price.amount) && project.price.amount < rules.cautionPrice
+    ...(price?.currency === 'RUB' && ceiling !== undefined && Number.isFinite(ceiling) && ceiling >= 0 && ceiling < rules.cautionPrice
       ? ['scope_budget_caution' as const] : []));
   if (has(rules.unrelated)) return primary || auxiliary ? done('review', 'insufficient_evidence') : done('exclude', 'outside_stack');
-  if (!has(rules.task) || !primary && !(auxiliary && has(rules.small))) return done('review', 'insufficient_evidence');
+  if (!has(rules.task) || !primary && !auxiliary) return done('review', 'insufficient_evidence');
+  if (!primary && auxiliary && !has(rules.small)) return done('review', 'insufficient_evidence');
   if (project.hireRate !== undefined && Number.isFinite(project.hireRate) && project.hireRate >= 0 &&
       project.hireRate < rules.cautionHireRate &&
       (project.customerStatistics?.exchangeProjects ?? -1) >= rules.cautionCustomerProjects) return done('review', 'customer_caution');

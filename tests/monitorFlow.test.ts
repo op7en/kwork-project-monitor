@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
@@ -16,8 +16,10 @@ vi.mock('googleapis', () => ({ google: { auth: { OAuth2: class {
 const config = { clientId: 'synthetic-client', clientSecret: 'synthetic-secret', refreshToken: 'synthetic-refresh', expectedAccountEmail: 'owner@example.invalid' };
 const owner = 7654321, controllers: MonitorController[] = [], dirs: string[] = [];
 let cursor = '100', messageId = 'synthetic-a', sender = 'news@kwork.ru';
+let digestRows = '';
 beforeEach(() => {
   vi.resetAllMocks(); cursor = '100'; messageId = 'synthetic-a'; sender = 'news@kwork.ru';
+  digestRows = TABLE_ROW.replace('Синтетический интерфейс', 'Исправить React баг');
   api.token.mockResolvedValue({ token: 'synthetic-access' });
   api.scopes.mockResolvedValue({ scopes: ['https://www.googleapis.com/auth/gmail.readonly'] });
   api.profile.mockImplementation(async () => ({ data: { emailAddress: 'owner@example.invalid', historyId: cursor } }));
@@ -26,7 +28,7 @@ beforeEach(() => {
   api.get.mockImplementation(async ({ id, format }: { id: string; format: string }) => ({ data: { id, internalDate: '2000', sizeEstimate: 10000,
     payload: { headers: [{ name: 'Subject', value: 'Новые проекты на бирже Kwork' }, { name: 'From', value: sender }],
       ...(format === 'full' ? { mimeType: 'text/html', body: { data: Buffer.from('<table>' + TABLE_HEADER +
-        TABLE_ROW.replace('Синтетический интерфейс', 'Исправить React баг') + '</table>').toString('base64url') } } : {}) } } }));
+        digestRows + '</table>').toString('base64url') } } : {}) } } }));
 });
 afterEach(async () => {
   for (const controller of controllers.splice(0)) await controller.shutdown();
@@ -42,7 +44,7 @@ function setup(path?: string, failSend = false) {
       const store = new MonitorStore(path!, 'synthetic-binding');
       return { store, pass: createMonitoringPass({ store, notifier, now: () => 1000,
         connect: (floor, allowed) => createGmailMonitoringClient(config, floor, allowed) }) };
-    }, 1000);
+    }, 1000, () => {}, () => existsSync(path!));
     controllers.push(monitor); return monitor;
   });
   bot.botInfo = { id: 9001, is_bot: true, first_name: 'Synthetic', username: 'test_monitor' } as UserFromGetMe;
@@ -65,6 +67,35 @@ function setup(path?: string, failSend = false) {
   };
   return { bot, monitor, cards, texts, command, path };
 }
+it.each([11, 30])('delivers a %i-project mixed digest through Gmail gates and restores without resending', async count => {
+  const s = setup(); await s.command('/monitor on');
+  const prices = ['5 000 ₽', 'до 10 000 ₽', 'от 5 000 ₽', '8 000–12 000 ₽'];
+  digestRows = Array.from({ length: count }, (_, i) => TABLE_ROW.replaceAll('9000001', String(9000001 + i))
+    .replace('Синтетический интерфейс', i % 2 ? 'Написать Telegram бот' : 'Исправить React баг')
+    .replace('5 555 ₽', prices[i % 4]!)).join('') + '<tr><td>synthetic malformed row</td></tr>';
+  cursor = '200'; await s.command('/projects');
+  expect(s.cards).toHaveLength(count);
+  expect(s.monitor.status()).toMatchObject({ enabled: true, blocked: false, counts: { sent: count, messages: 1 } });
+  const cardTexts = s.texts.filter(text => text.includes('Цена:'));
+  for (const price of prices) expect(cardTexts.some(text => text.includes(`Цена: ${price}`))).toBe(true);
+  expect(cardTexts.filter(text => text.includes('Статус: На проверку (Недостаточно данных)'))).toHaveLength(Math.floor(count / 2));
+  expect(api.get.mock.calls.map(c => c[0].format)).toEqual(['metadata', 'full']);
+  await s.monitor.shutdown(); const restarted = setup(s.path);
+  expect(await restarted.monitor.restore()).toMatchObject({ status: 'completed', sent: 0 });
+  expect(restarted.monitor.status().enabled).toBe(true); expect(restarted.cards).toEqual([]);
+  cursor = '300'; messageId = 'synthetic-b'; await restarted.command('/projects');
+  expect(restarted.cards).toEqual([]); expect(restarted.monitor.status().counts.sent).toBe(count);
+  await restarted.monitor.off(); await restarted.monitor.shutdown(); const off = setup(s.path);
+  expect(await off.monitor.restore()).toMatchObject({ status: 'disabled' }); expect(off.monitor.status().enabled).toBe(false);
+});
+it('uses a fresh profile history fence after connect rather than the account verification snapshot', async () => {
+  const s = setup(); await s.command('/monitor on');
+  api.profile.mockClear(); cursor = '300';
+  api.profile.mockResolvedValueOnce({ data: { emailAddress: config.expectedAccountEmail, historyId: '100' } });
+  await s.command('/projects');
+  expect(api.profile.mock.calls.map(c => c[0].fields)).toEqual(['emailAddress,historyId', 'historyId']);
+  expect(s.cards).toHaveLength(1); expect(s.monitor.status().counts.messages).toBe(1);
+});
 it('runs owner command through verified Gmail, metadata gate, parser, SQLite and notifier across restart', async () => {
   const s = setup(); await s.command('/monitor on'); expect(api.get).not.toHaveBeenCalled(); expect(s.cards).toEqual([]);
   cursor = '200'; await s.command('/projects');
@@ -84,6 +115,7 @@ it('does not fetch a body for an invalid sender and stops on expired history ins
   cursor = '300'; api.history.mockRejectedValue({ response: { status: 404, data: 'SYNTHETIC_PRIVATE' } });
   await s.command('/projects'); expect(s.monitor.status()).toMatchObject({ enabled: false, lastStatus: 'history_expired' });
   await vi.advanceTimersByTimeAsync(5000); expect(api.history).toHaveBeenCalledTimes(2);
+  expect(s.texts.filter(text => text.startsWith('⚠️ Мониторинг Kwork остановлен:'))).toHaveLength(1);
   await s.command('/monitor baseline'); expect(s.monitor.status()).toMatchObject({ enabled: false, lastStatus: 'baseline_exists', blocked: true });
   await s.command('/monitor baseline confirm'); expect(s.monitor.status()).toMatchObject({ enabled: false, lastStatus: 'initialized', blocked: false });
   expect(JSON.stringify(s.texts)).not.toContain('SYNTHETIC_PRIVATE');

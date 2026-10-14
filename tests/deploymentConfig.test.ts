@@ -24,7 +24,7 @@ it.each(Object.keys(valid))('refuses absent or empty required %s with no values'
   expect(() => checkRuntimeConfig(env)).toThrow(`env_missing:${key}`);
   env[key] = ''; expect(() => checkRuntimeConfig(env)).toThrow(`env_missing:${key}`);
 });
-it.each(['MONITOR_INTERVAL_MINUTES=4', 'MONITOR_MAX_MESSAGES=101', 'MONITOR_MAX_SENDS=0'])('refuses invalid application limit %s', line => {
+it.each(['MONITOR_INTERVAL_MINUTES=0', 'MONITOR_MAX_MESSAGES=101', 'MONITOR_MAX_SENDS=0'])('refuses invalid application limit %s', line => {
   expect(() => parseRuntimeEnvFile(text(valid) + '\n' + line)).toThrow('env_application_invalid');
 });
 it.each([

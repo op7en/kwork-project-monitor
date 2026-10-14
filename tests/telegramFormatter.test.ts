@@ -5,7 +5,7 @@ import { formatProjectNotification } from '../src/bot/projectFormatter.js';
 const project: KworkProject = {
   projectId: '9000001', url: 'https://kwork.ru/new_offer?project=9000001',
   title: 'Синтетический интерфейс', sourceGmailMessageId: 'synthetic-private-provenance',
-  price: { raw: '5 555 ₽', amount: 5555, currency: 'RUB' },
+  price: {kind:'fixed', raw: '5 555 ₽', amount: 5555, currency: 'RUB' },
   customerName: 'Synthetic buyer', customerStatistics: { exchangeProjects: 33 },
   hireRate: 44, details: 'Synthetic description\nSynthetic category',
 };
@@ -38,7 +38,7 @@ describe('Telegram project formatter', () => {
   });
 
   it('does not reuse untrusted raw price text and retains zero optional values', () => {
-    const result=formatProjectNotification({...project,price:{raw:'<b>incorrect</b>',amount:0,currency:'RUB'},
+    const result=formatProjectNotification({...project,price:{kind:'fixed',raw:'<b>incorrect</b>',amount:0,currency:'RUB'},
       hireRate:0,customerStatistics:{exchangeProjects:0,postedProjects:0,hiredProjects:0}});
     expect(result?.text).toContain('Цена: 0 ₽');
     expect(result?.text).toContain('Проектов на бирже: 0');
@@ -49,7 +49,7 @@ describe('Telegram project formatter', () => {
   });
 
   it('omits invalid numeric optional values and does not reinterpret a desired budget as price', () => {
-    const result=formatProjectNotification({...project,price:{raw:'bad',amount:-1,currency:'RUB'},
+    const result=formatProjectNotification({...project,price:{kind:'fixed',raw:'bad',amount:-1,currency:'RUB'},
       hireRate:101,customerStatistics:{exchangeProjects:-1},
       budget:{desired:{raw:'100 ₽',amount:100,currency:'RUB',kind:'fixed'}}});
     expect(result?.text).not.toContain('Цена:');
@@ -65,6 +65,25 @@ describe('Telegram project formatter', () => {
     expect(result!.text.endsWith('…')).toBe(true);
     expect(result!.text).not.toMatch(/[\uD800-\uDFFF]/u);
     expect(result!.options.reply_markup.inline_keyboard[0]?.[0]).toEqual({text:'Открыть заказ',url:project.url});
+  });
+
+  it('keeps all review reasons readable and bounds the remaining description', () => {
+    const result = formatProjectNotification({ ...project, details: '🙂'.repeat(5000) }, {
+      classification: 'review', reasons: ['complex_scope', 'scope_budget_caution', 'complex_scope'],
+    });
+    expect(result?.text).toContain('Статус: На проверку (Сложный объём работ; Низкий бюджет для объёма работ)');
+    expect(result!.text.length).toBeLessThanOrEqual(4000);
+    expect(result!.text).not.toMatch(/[\uD800-\uDFFF]/u);
+    expect(result?.options).not.toHaveProperty('parse_mode');
+    expect(result?.options).not.toHaveProperty('entities');
+  });
+
+  it.each([
+    { kind: 'up-to', max: -1 }, { kind: 'from', min: NaN },
+    { kind: 'range', min: 12000, max: 8000 }, { kind: 'range', min: 0, max: Infinity },
+  ] as const)('omits malformed price instead of reusing raw text: %j', value => {
+    const result = formatProjectNotification({ ...project, price: { ...value, currency: 'RUB', raw: 'UNTRUSTED' } });
+    expect(result?.text).not.toContain('Цена:'); expect(result?.text).not.toContain('UNTRUSTED');
   });
 
   it('keeps the title on one line and strips misleading controls', () => {

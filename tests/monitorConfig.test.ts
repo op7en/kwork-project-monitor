@@ -1,10 +1,11 @@
 import { expect, it } from 'vitest';
 import { loadMonitorConfig } from '../src/config/monitor.js';
-it('uses six hours by default and accepts a bounded configured interval', () => {
-  expect(loadMonitorConfig({}).intervalMs).toBe(21_600_000);
+it('uses five minutes by default and accepts a bounded configured interval', () => {
+  expect(loadMonitorConfig({}).intervalMs).toBe(300_000);
+  expect(loadMonitorConfig({ MONITOR_INTERVAL_MINUTES: '1' }).intervalMs).toBe(60_000);
   expect(loadMonitorConfig({ MONITOR_INTERVAL_MINUTES: '60' }).intervalMs).toBe(3_600_000);
 });
-it.each(['0', '4', '1441', 'abc', '1.5'])('rejects interval %s without reflecting input', value => {
+it.each(['0', '1441', 'abc', '1.5'])('rejects interval %s without reflecting input', value => {
   expect(() => loadMonitorConfig({ MONITOR_INTERVAL_MINUTES: value })).toThrow('monitor_configuration_error');
 });
 it('can restrict production per-pass limits without claiming a whole-run acceptance budget', () => {
